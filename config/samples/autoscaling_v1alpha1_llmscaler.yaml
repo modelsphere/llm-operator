@@ -1,0 +1,9 @@
+apiVersion: autoscaling.4pd.io/v1alpha1
+kind: LLMScaler
+metadata:
+  labels:
+    app.kubernetes.io/name: llmscaleoperator
+    app.kubernetes.io/managed-by: kustomize
+  name: llmscaler-sample
+spec:
+  # TODO(user): Add fields here
