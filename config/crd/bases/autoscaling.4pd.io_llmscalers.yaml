@@ -93,6 +93,13 @@ spec:
                   priorityClass:
                     type: string
                 type: object
+              retryPeriodSeconds:
+                default: 10
+                description: retryPeriodSeconds is the interval at which the autoscaler
+                  retries when an error occurs or target is not found. Defaults to
+                  10.
+                format: int32
+                type: integer
               scaleDown:
                 description: scaleDown defines the behavior for scaling down, e.g.
                   cache-aware teardown
@@ -104,6 +111,21 @@ spec:
                     format: int32
                     type: integer
                 type: object
+              selector:
+                additionalProperties:
+                  type: string
+                description: selector is used to filter metrics for the target resource
+                type: object
+              serverAddress:
+                description: serverAddress is the upstream metrics server address
+                  (e.g., http://prometheus:9090)
+                type: string
+              syncPeriodSeconds:
+                default: 15
+                description: syncPeriodSeconds is the interval at which the autoscaler
+                  evaluates metrics and scales. Defaults to 15.
+                format: int32
+                type: integer
               targetRef:
                 description: targetRef points to the resource (e.g., Deployment) to
                   scale
@@ -123,6 +145,7 @@ spec:
             - maxReplicas
             - metrics
             - minReplicas
+            - serverAddress
             - targetRef
             type: object
           status:

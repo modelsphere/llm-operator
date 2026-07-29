@@ -41,3 +41,13 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - leaderworkerset.x-k8s.io
+  resources:
+  - leaderworkersets
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch

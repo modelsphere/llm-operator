@@ -62,6 +62,23 @@ type LLMScalerSpec struct {
 	// targetRef points to the resource (e.g., Deployment) to scale
 	TargetRef TargetRef `json:"targetRef"`
 
+	// serverAddress is the upstream metrics server address (e.g., http://prometheus:9090)
+	ServerAddress string `json:"serverAddress"`
+
+	// selector is used to filter metrics for the target resource
+	// +optional
+	Selector map[string]string `json:"selector,omitempty"`
+
+	// syncPeriodSeconds is the interval at which the autoscaler evaluates metrics and scales. Defaults to 15.
+	// +kubebuilder:default=15
+	// +optional
+	SyncPeriodSeconds int32 `json:"syncPeriodSeconds,omitempty"`
+
+	// retryPeriodSeconds is the interval at which the autoscaler retries when an error occurs or target is not found. Defaults to 10.
+	// +kubebuilder:default=10
+	// +optional
+	RetryPeriodSeconds int32 `json:"retryPeriodSeconds,omitempty"`
+
 	// minReplicas is the lower limit for the number of replicas to which the autoscaler can scale down
 	// +kubebuilder:validation:Minimum=1
 	MinReplicas int32 `json:"minReplicas"`
