@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-router
+  labels:
+    app: {{ .Release.Name }}-router
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-router
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-router
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      hostNetwork: true
+      containers:
+      - name: router
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        volumeMounts:
+        - name: config-volume
+          mountPath: /workspace/configs
+        resources:
+{{ toYaml .Values.resources | indent 10 }}
+      volumes:
+      - name: config-volume
+        configMap:
+          name: {{ .Release.Name }}-router-config

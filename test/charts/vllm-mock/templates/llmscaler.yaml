@@ -1,0 +1,18 @@
+{{- if .Values.scaler.enabled -}}
+apiVersion: autoscaling.4pd.io/v1alpha1
+kind: LLMScaler
+metadata:
+  name: {{ .Release.Name }}-scaler
+spec:
+  syncPeriodSeconds: {{ .Values.scaler.syncPeriodSeconds }}
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ .Release.Name }}-vllm
+  serverAddress: {{ .Values.scaler.serverAddress | quote }}
+  minReplicas: {{ .Values.scaler.minReplicas }}
+  maxReplicas: {{ .Values.scaler.maxReplicas }}
+  metrics:
+    - type: KVCacheUtilization
+      targetAverageValue: {{ .Values.scaler.targetKVCache | quote }}
+{{- end -}}

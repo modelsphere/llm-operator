@@ -1,0 +1,30 @@
+image:
+  repository: harbor.4pd.io/hardcore-tech/cache_aware_router
+  tag: "v0.6.0"
+  pullPolicy: IfNotPresent
+
+config:
+  server:
+    host: "0.0.0.0"
+    port: 8061
+  workers:
+    - {url: "http://172.28.4.4:8050",  max_load: 25, load_penalty: 6}
+    - {url: "http://172.28.4.7:8050",  max_load: 25, load_penalty: 6}
+    - {url: "http://172.28.4.10:8050", max_load: 25, load_penalty: 6}
+    - {url: "http://172.28.4.63:8050", max_load: 25, load_penalty: 6}
+  cache:
+    balance_rel_threshold: 1.25
+    max_tree_size: 2097152
+    daily_cleanup_hour_utc: 21
+  proxy:
+    add_routed_peer_header: true
+  logging:
+    level: "info"
+
+resources:
+  requests:
+    cpu: "2"
+    memory: "2Gi"
+  limits:
+    cpu: "16"
+    memory: "8Gi"

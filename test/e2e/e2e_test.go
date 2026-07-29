@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -270,15 +271,76 @@ var _ = Describe("Manager", Ordered, func() {
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 
-		// TODO: Customize the e2e test suite with scenarios specific to your project.
-		// Consider applying sample/CR(s) and check their status and/or verifying
-		// the reconciliation by using the metrics, i.e.:
-		// metricsOutput, err := getMetricsOutput()
-		// Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
-		// Expect(metricsOutput).To(ContainSubstring(
-		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
-		//    strings.ToLower(<Kind>),
-		// ))
+		It("should dynamically scale up a mock deployment", func() {
+			By("creating a dummy Deployment")
+			deployYAML := `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-llm-deployment
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mock-llm
+  template:
+    metadata:
+      labels:
+        app: mock-llm
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:latest
+`
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(deployYAML)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create dummy Deployment")
+
+			By("creating an LLMScaler targeting the Deployment")
+			scalerYAML := `
+apiVersion: autoscaling.4pd.io/v1alpha1
+kind: LLMScaler
+metadata:
+  name: test-scaler
+  namespace: default
+spec:
+  syncPeriodSeconds: 3
+  retryPeriodSeconds: 3
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mock-llm-deployment
+  minReplicas: 1
+  maxReplicas: 5
+  serverAddress: "http://mock-prometheus"
+  metrics:
+    - type: KVCacheUtilization
+      targetAverageValue: "50%"
+`
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(scalerYAML)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create LLMScaler")
+
+			By("waiting for the operator to scale the deployment to 2 replicas")
+			verifyScale := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "deployment", "mock-llm-deployment", "-n", "default", "-o", "jsonpath={.spec.replicas}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				// We expect 2 because our mock metric returns 85, and target is 50. ceil(1 * 85/50) = 2.
+				g.Expect(output).To(Equal("2"))
+			}
+			Eventually(verifyScale, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("cleaning up the test resources")
+			cmd = exec.Command("kubectl", "delete", "deployment", "mock-llm-deployment", "-n", "default")
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "llmscaler", "test-scaler", "-n", "default")
+			_, _ = utils.Run(cmd)
+		})
+
 	})
 })
 

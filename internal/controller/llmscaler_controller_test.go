@@ -21,11 +21,11 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"k8s.io/apimachinery/pkg/api/errors"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	autoscalingv1alpha1 "gitlab.4pd.io/inference-production-stack/llm-operator/api/v1alpha1"
 )
@@ -33,55 +33,109 @@ import (
 var _ = Describe("LLMScaler Controller", func() {
 	Context("When reconciling a resource", func() {
 		const (
-			resourceName      = "test-resource"
-			resourceNamespace = "default"
+			scalerName       = "test-scaler"
+			scalerNamespace  = "default"
+			targetDeployName = "test-deployment"
 		)
 
 		ctx := context.Background()
 
 		typeNamespacedName := types.NamespacedName{
-			Name:      resourceName,
-			Namespace: resourceNamespace,
+			Name:      scalerName,
+			Namespace: scalerNamespace,
 		}
-		llmscaler := &autoscalingv1alpha1.LLMScaler{}
 
 		BeforeEach(func() {
-			By("creating the custom resource for the Kind LLMScaler")
-			err := k8sClient.Get(ctx, typeNamespacedName, llmscaler)
-			if err != nil && errors.IsNotFound(err) {
-				resource := &autoscalingv1alpha1.LLMScaler{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      resourceName,
-						Namespace: resourceNamespace,
+			By("creating a dummy Deployment to act as the target")
+			var replicas int32 = 1
+			deploy := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      targetDeployName,
+					Namespace: scalerNamespace,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Replicas: &replicas,
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "test"},
 					},
-					// TODO(user): Specify other spec details if needed.
-				}
-				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{"app": "test"},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "nginx",
+									Image: "nginx",
+								},
+							},
+						},
+					},
+				},
 			}
+			Expect(k8sClient.Create(ctx, deploy)).To(Succeed())
+
+			By("creating the LLMScaler resource")
+			llmscaler := &autoscalingv1alpha1.LLMScaler{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      scalerName,
+					Namespace: scalerNamespace,
+				},
+				Spec: autoscalingv1alpha1.LLMScalerSpec{
+					TargetRef: autoscalingv1alpha1.TargetRef{
+						APIVersion: "apps/v1",
+						Kind:       "Deployment",
+						Name:       targetDeployName,
+					},
+					ServerAddress: "http://mock-prometheus",
+					MinReplicas:   1,
+					MaxReplicas:   5,
+					Metrics: []autoscalingv1alpha1.MetricSpec{
+						{
+							Type:               autoscalingv1alpha1.MetricTypeKVCacheUtilization,
+							TargetAverageValue: "50%",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, llmscaler)).To(Succeed())
 		})
 
 		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &autoscalingv1alpha1.LLMScaler{}
-			err := k8sClient.Get(ctx, typeNamespacedName, resource)
-			Expect(err).NotTo(HaveOccurred())
+			By("Cleanup the LLMScaler")
+			scaler := &autoscalingv1alpha1.LLMScaler{}
+			_ = k8sClient.Get(ctx, typeNamespacedName, scaler)
+			_ = k8sClient.Delete(ctx, scaler)
 
-			By("Cleanup the specific resource instance LLMScaler")
-			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+			By("Cleanup the Deployment")
+			deploy := &appsv1.Deployment{}
+			_ = k8sClient.Get(ctx, types.NamespacedName{Name: targetDeployName, Namespace: scalerNamespace}, deploy)
+			_ = k8sClient.Delete(ctx, deploy)
 		})
-		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
+
+		It("should successfully scale the deployment based on metrics", func() {
+			By("running the Reconciler")
 			controllerReconciler := &LLMScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
 
+			// Call Reconcile once
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
+
+			By("checking if the Deployment replicas increased")
+			deploy := &appsv1.Deployment{}
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: targetDeployName, Namespace: scalerNamespace}, deploy)
+			Expect(err).NotTo(HaveOccurred())
+
+			// We expect the Reconciler to scale from 1 to 2 because:
+			// fetchMetricFromUpstream mock returns 85.0 for KVCacheUtilization.
+			// The target is 50%.
+			// ceil(1 * (85 / 50)) = ceil(1.7) = 2
+			Expect(*deploy.Spec.Replicas).To(Equal(int32(2)))
 		})
 	})
 })

@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-vllm
+  labels:
+    app: {{ .Release.Name }}-vllm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-vllm
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-vllm
+    spec:
+      containers:
+      - name: vllm
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        command: ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+        args:
+          - "--model=/data/models/{{ .Values.model.name }}"
+          - "--host=0.0.0.0"
+          - "--port=8000"
+          - "--max-model-len={{ .Values.model.maxLen }}"
+        ports:
+        - containerPort: 8000
+          name: http
+        volumeMounts:
+        - name: model-storage
+          mountPath: /data/models
+          readOnly: true
+        resources:
+          limits:
+            nvidia.com/gpu: "{{ .Values.model.gpus }}"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 5
+      volumes:
+      - name: model-storage
+        hostPath:
+          path: {{ .Values.model.localPath }}
+          type: DirectoryOrCreate

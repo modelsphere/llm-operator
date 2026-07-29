@@ -1,0 +1,19 @@
+image:
+  repository: "vllm/vllm-openai"
+  tag: "v0.5.1"
+
+model:
+  # The name of the model folder
+  name: "opt-125m"
+  # Where the models are stored on the host node
+  localPath: "/mnt/disk0/models"
+  maxLen: "1024"
+  gpus: "1"
+
+scaler:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 5
+  syncPeriodSeconds: 10
+  serverAddress: "http://prometheus-operated.monitoring.svc.cluster.local:9090"
+  targetKVCache: "80%"
