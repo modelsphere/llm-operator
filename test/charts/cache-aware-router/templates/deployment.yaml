@@ -24,7 +24,7 @@ spec:
         # Kubernetes doesn't have a direct equivalent to Docker's --ulimit flag on the Pod level.
         # The standard workaround is to use a shell to raise the soft limit before executing the binary.
         command: ["/bin/sh", "-c"]
-        args: ["ulimit -n 65535 && exec cache_aware_router"]
+        args: ["ulimit -n 65535 && exec /workspace/cache_aware_router"]
         volumeMounts:
         - name: config-volume
           mountPath: /workspace/configs
