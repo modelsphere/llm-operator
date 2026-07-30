@@ -36,6 +36,8 @@ type MetricType string
 const (
 	MetricTypeKVCacheUtilization MetricType = "KVCacheUtilization"
 	MetricTypeQueueDepth         MetricType = "QueueDepth"
+	MetricTypeCapacityLoad       MetricType = "CapacityLoad"
+	MetricTypeTPMLoad            MetricType = "TPMLoad"
 )
 
 type ServerType string

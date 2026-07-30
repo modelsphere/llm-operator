@@ -6,4 +6,21 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: llmscaler-sample
 spec:
-  # TODO(user): Add fields here
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: vllm-opt-125m
+  serverType: Custom
+  serverAddress: "http://101.42.28.156/monitor"
+  selector:
+    model_name: "opt-125m"
+  minReplicas: 1
+  maxReplicas: 5
+  syncPeriodSeconds: 15
+  retryPeriodSeconds: 10
+  metrics:
+    - type: TPMLoad
+      targetAverageValue: "80"
+  scaleDown:
+    stabilizationWindowSeconds: 300
+    behavior: TargetedDeletion

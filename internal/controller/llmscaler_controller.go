@@ -110,7 +110,7 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		var err error
 
 		if scaler.Spec.ServerType == autoscalingv1alpha1.ServerTypeCustom {
-			// Fetch current metric value using the custom llm-monitor /api/tpm_load API
+			// Fetch current metric value using the custom llm-monitor /api/capacity_load API
 			currentValue, err = fetchMetricFromCustom(scaler.Spec.ServerAddress, metric.Type, scaler.Spec.Selector)
 		} else {
 			// Default to Prometheus
@@ -199,7 +199,7 @@ func (r *LLMScalerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// fetchMetricFromCustom queries the custom metrics server API (e.g. llm-monitor /api/tpm_load)
+// fetchMetricFromCustom queries the custom metrics server API (e.g. llm-monitor /api/capacity_load)
 func fetchMetricFromCustom(serverAddress string, metricType autoscalingv1alpha1.MetricType, selector map[string]string) (float64, error) {
 	if serverAddress == "" {
 		return 0, fmt.Errorf("serverAddress is empty, cannot fetch custom metrics")
@@ -212,8 +212,17 @@ func fetchMetricFromCustom(serverAddress string, metricType autoscalingv1alpha1.
 
 	httpClient := &http.Client{Timeout: 5 * time.Second}
 
-	// Hit the /api/tpm_load endpoint
-	queryURL := fmt.Sprintf("%s/api/tpm_load?limit=1&model=%s", strings.TrimRight(serverAddress, "/"), url.QueryEscape(modelName))
+	var endpoint string
+	if metricType == autoscalingv1alpha1.MetricTypeTPMLoad {
+		endpoint = "/api/tpm_load"
+	} else if metricType == autoscalingv1alpha1.MetricTypeCapacityLoad {
+		endpoint = "/api/capacity_load"
+	} else {
+		return 0, fmt.Errorf("unsupported custom metric type: %s", metricType)
+	}
+
+	// Hit the correct endpoint based on metric type
+	queryURL := fmt.Sprintf("%s%s?limit=1&model=%s", strings.TrimRight(serverAddress, "/"), endpoint, url.QueryEscape(modelName))
 
 	req, err := http.NewRequest("GET", queryURL, nil)
 	if err != nil {
