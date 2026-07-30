@@ -18,8 +18,12 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"math"
+	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -47,6 +51,7 @@ type LLMScalerReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=leaderworkerset.x-k8s.io,resources=leaderworkersets,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 
 func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := logf.FromContext(ctx)
@@ -101,8 +106,17 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	var maxDesiredReplicas int32 = 0
 
 	for _, metric := range scaler.Spec.Metrics {
-		// Fetch current metric value from upstream server
-		currentValue, err := fetchMetricFromUpstream(scaler.Spec.ServerAddress, metric.Type, scaler.Spec.Selector)
+		var currentValue float64
+		var err error
+
+		if scaler.Spec.ServerType == autoscalingv1alpha1.ServerTypeCustom {
+			// Fetch current metric value using the custom llm-monitor /api/tpm_load API
+			currentValue, err = fetchMetricFromCustom(scaler.Spec.ServerAddress, metric.Type, scaler.Spec.Selector)
+		} else {
+			// Default to Prometheus
+			currentValue, err = fetchMetricFromUpstream(scaler.Spec.ServerAddress, metric.Type, scaler.Spec.Selector)
+		}
+
 		if err != nil {
 			logger.Error(err, "failed to fetch metric", "metric", metric.Type)
 			continue
@@ -185,35 +199,158 @@ func (r *LLMScalerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// fetchMetricFromUpstream is a mock function to query the metrics server (e.g., Prometheus)
-func fetchMetricFromUpstream(serverAddress string, metricType autoscalingv1alpha1.MetricType, selector map[string]string) (float64, error) {
+// fetchMetricFromCustom queries the custom metrics server API (e.g. llm-monitor /api/tpm_load)
+func fetchMetricFromCustom(serverAddress string, metricType autoscalingv1alpha1.MetricType, selector map[string]string) (float64, error) {
 	if serverAddress == "" {
-		return 0, fmt.Errorf("serverAddress is empty")
+		return 0, fmt.Errorf("serverAddress is empty, cannot fetch custom metrics")
 	}
-	// TODO: Implement actual HTTP request to Prometheus API using the serverAddress and selector.
-	// For example:
-	// query := buildPromQL(metricType, selector)
-	// resp := http.Get(fmt.Sprintf("%s/api/v1/query?query=%s", serverAddress, url.QueryEscape(query)))
 
-	// Mocking a response for demonstration purposes:
-	switch metricType {
-	case autoscalingv1alpha1.MetricTypeKVCacheUtilization:
-		// e.g., 85% cache utilized
-		return 85.0, nil
-	case autoscalingv1alpha1.MetricTypeQueueDepth:
-		// e.g., 10 requests in queue per pod
-		return 10.0, nil
-	default:
-		return 0, fmt.Errorf("unknown metric type")
+	modelName, ok := selector["model_name"]
+	if !ok || modelName == "" {
+		return 0, fmt.Errorf("selector must contain 'model_name' for custom metric fetching")
 	}
+
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+
+	// Hit the /api/tpm_load endpoint
+	queryURL := fmt.Sprintf("%s/api/tpm_load?limit=1&model=%s", strings.TrimRight(serverAddress, "/"), url.QueryEscape(modelName))
+
+	req, err := http.NewRequest("GET", queryURL, nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Add headers from the full example
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Authorization", "Basic YWRtaW46NHBkYWRtaW4yMDI2IQ==")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("failed to fetch from custom metrics server: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return 0, fmt.Errorf("invalid response from custom metrics server: %d %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var respData struct {
+		Samples []struct {
+			UtilPct float64 `json:"util_pct"`
+		} `json:"samples"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&respData); err != nil {
+		return 0, fmt.Errorf("failed to decode JSON from custom metrics server: %w", err)
+	}
+
+	if len(respData.Samples) == 0 {
+		return 0, fmt.Errorf("no samples returned from custom metrics server for model %s", modelName)
+	}
+
+	// The API returns samples in ascending order, so we take the last one
+	latestSample := respData.Samples[len(respData.Samples)-1]
+
+	// Assume util_pct corresponds to the utilization we want to scale on
+	return latestSample.UtilPct, nil
 }
 
 // parseTargetValue handles parsing values like "80%" or "5" into a float64
 func parseTargetValue(val string) (float64, error) {
 	val = strings.TrimSpace(val)
-	if strings.HasSuffix(val, "%") {
-		numStr := strings.TrimSuffix(val, "%")
+	if before, ok :=strings.CutSuffix(val, "%"); ok  {
+		numStr := before
 		return strconv.ParseFloat(numStr, 64)
 	}
 	return strconv.ParseFloat(val, 64)
+}
+
+// fetchMetricFromUpstream queries the metrics server (e.g., Prometheus)
+func fetchMetricFromUpstream(serverAddress string, metricType autoscalingv1alpha1.MetricType, selector map[string]string) (float64, error) {
+	if serverAddress == "" {
+		return 0, fmt.Errorf("serverAddress is empty")
+	}
+
+	// 1. Determine the metric name
+	var metricName string
+	switch metricType {
+	case autoscalingv1alpha1.MetricTypeKVCacheUtilization:
+		metricName = "vllm:gpu_cache_usage_perc"
+	case autoscalingv1alpha1.MetricTypeQueueDepth:
+		metricName = "vllm:num_requests_waiting"
+	default:
+		return 0, fmt.Errorf("unknown metric type: %s", metricType)
+	}
+
+	// 2. Build the PromQL selector string
+	var labelSelectors []string
+	for k, v := range selector {
+		labelSelectors = append(labelSelectors, fmt.Sprintf(`%s="%s"`, k, v))
+	}
+	selectorStr := ""
+	if len(labelSelectors) > 0 {
+		selectorStr = "{" + strings.Join(labelSelectors, ",") + "}"
+	}
+
+	// 3. Construct the full PromQL query
+	promQL := fmt.Sprintf("avg(%s%s)", metricName, selectorStr)
+
+	// 4. Make the HTTP request
+	queryURL := fmt.Sprintf("%s/api/v1/query?query=%s", strings.TrimRight(serverAddress, "/"), url.QueryEscape(promQL))
+
+	client := http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(queryURL)
+	if err != nil {
+		return 0, fmt.Errorf("failed to query prometheus: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return 0, fmt.Errorf("prometheus returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	// 5. Parse the JSON response
+	var promResp struct {
+		Status string `json:"status"`
+		Data   struct {
+			Result []struct {
+				Value []any `json:"value"`
+			} `json:"result"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&promResp); err != nil {
+		return 0, fmt.Errorf("failed to decode prometheus response: %w", err)
+	}
+
+	if promResp.Status != "success" {
+		return 0, fmt.Errorf("prometheus query failed with status: %s", promResp.Status)
+	}
+
+	if len(promResp.Data.Result) == 0 {
+		return 0, fmt.Errorf("no metric data found for query: %s", promQL)
+	}
+
+	valArray := promResp.Data.Result[0].Value
+	if len(valArray) != 2 {
+		return 0, fmt.Errorf("unexpected value format from prometheus")
+	}
+
+	valStr, ok := valArray[1].(string)
+	if !ok {
+		return 0, fmt.Errorf("prometheus metric value is not a string")
+	}
+
+	metricValue, err := strconv.ParseFloat(valStr, 64)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse metric value as float: %w", err)
+	}
+
+	if metricType == autoscalingv1alpha1.MetricTypeKVCacheUtilization && metricValue <= 1.0 {
+		metricValue = metricValue * 100
+	}
+
+	return metricValue, nil
 }

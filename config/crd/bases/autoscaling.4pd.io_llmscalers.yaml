@@ -120,6 +120,11 @@ spec:
                 description: serverAddress is the upstream metrics server address
                   (e.g., http://prometheus:9090)
                 type: string
+              serverType:
+                default: Prometheus
+                description: serverType defines the type of metrics server (Prometheus
+                  or Custom)
+                type: string
               syncPeriodSeconds:
                 default: 15
                 description: syncPeriodSeconds is the interval at which the autoscaler

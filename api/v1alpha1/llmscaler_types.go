@@ -38,6 +38,13 @@ const (
 	MetricTypeQueueDepth         MetricType = "QueueDepth"
 )
 
+type ServerType string
+
+const (
+	ServerTypePrometheus ServerType = "Prometheus"
+	ServerTypeCustom     ServerType = "Custom"
+)
+
 // MetricSpec defines the metric to monitor for scaling decisions
 type MetricSpec struct {
 	Type               MetricType `json:"type"`
@@ -64,6 +71,11 @@ type LLMScalerSpec struct {
 
 	// serverAddress is the upstream metrics server address (e.g., http://prometheus:9090)
 	ServerAddress string `json:"serverAddress"`
+
+	// serverType defines the type of metrics server (Prometheus or Custom)
+	// +kubebuilder:default="Prometheus"
+	// +optional
+	ServerType ServerType `json:"serverType,omitempty"`
 
 	// selector is used to filter metrics for the target resource
 	// +optional

@@ -18,6 +18,8 @@ package controller
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -45,7 +47,23 @@ var _ = Describe("LLMScaler Controller", func() {
 			Namespace: scalerNamespace,
 		}
 
+		var mockServer *httptest.Server
+
 		BeforeEach(func() {
+			mockServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`{
+					"status": "success",
+					"data": {
+						"result": [
+							{
+								"value": [ 1234567890, "0.85" ]
+							}
+						]
+					}
+				}`))
+			}))
+
 			By("creating a dummy Deployment to act as the target")
 			var replicas int32 = 1
 			deploy := &appsv1.Deployment{
@@ -87,7 +105,7 @@ var _ = Describe("LLMScaler Controller", func() {
 						Kind:       "Deployment",
 						Name:       targetDeployName,
 					},
-					ServerAddress: "http://mock-prometheus",
+					ServerAddress: mockServer.URL,
 					MinReplicas:   1,
 					MaxReplicas:   5,
 					Metrics: []autoscalingv1alpha1.MetricSpec{
@@ -102,6 +120,10 @@ var _ = Describe("LLMScaler Controller", func() {
 		})
 
 		AfterEach(func() {
+			if mockServer != nil {
+				mockServer.Close()
+			}
+
 			By("Cleanup the LLMScaler")
 			scaler := &autoscalingv1alpha1.LLMScaler{}
 			_ = k8sClient.Get(ctx, typeNamespacedName, scaler)

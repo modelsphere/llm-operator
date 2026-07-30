@@ -19,14 +19,11 @@ spec:
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
         command: ["python3", "-m", "vllm.entrypoints.openai.api_server"]
         args:
-          - "--model=/data/models/{{ .Values.model.name }}"
+          - "--model=/data/models"
           - "--served-model-name={{ .Values.model.name }}"
           - "--host=0.0.0.0"
           - "--port=8000"
           - "--max-model-len={{ .Values.model.maxLen }}"
-        env:
-          - name: HF_HOME
-            value: /data/models
         ports:
         - containerPort: 8000
           name: http

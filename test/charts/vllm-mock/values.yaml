@@ -3,9 +3,9 @@ image:
   tag: "latest-cu129-ubuntu2404"
 
 model:
-  # The name of the model folder
+  # The Hugging Face repo ID
   name: "facebook/opt-125m"
-  # Where the models are stored on the host node
+  # Where the models are cached on the host node
   localPath: "/mnt/disk0/models/facebook/opt-125m"
   maxLen: "1024"
   gpus: "1"
