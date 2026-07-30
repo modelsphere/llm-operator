@@ -23,8 +23,8 @@ spec:
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         # Kubernetes doesn't have a direct equivalent to Docker's --ulimit flag on the Pod level.
         # The standard workaround is to use a shell to raise the soft limit before executing the binary.
-        command: ["/bin/sh", "-c"]
-        args: ["ulimit -n 65535 && exec /workspace/cache_aware_router"]
+        command: ["/bin/bash", "-c"]
+        args: ["ulimit -n 65535 && exec /workspace/launch_service"]
         volumeMounts:
         - name: config-volume
           mountPath: /workspace/configs
