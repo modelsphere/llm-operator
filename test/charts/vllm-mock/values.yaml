@@ -11,9 +11,9 @@ model:
   gpus: "1"
 
 scaler:
-  enabled: false
+  enabled: true
   minReplicas: 1
   maxReplicas: 5
   syncPeriodSeconds: 10
-  serverAddress: "http://prometheus-operated.monitoring.svc.cluster.local:9090"
+  serverAddress: "http://llm-monitor.llm-monitor.svc:8080"
   targetKVCache: "80%"

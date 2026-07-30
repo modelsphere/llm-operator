@@ -10,9 +10,12 @@ spec:
     kind: Deployment
     name: {{ .Release.Name }}-vllm
   serverAddress: {{ .Values.scaler.serverAddress | quote }}
+  selector:
+    model_name: "opt-125m"
+  serverType: Custom
   minReplicas: {{ .Values.scaler.minReplicas }}
   maxReplicas: {{ .Values.scaler.maxReplicas }}
   metrics:
-    - type: KVCacheUtilization
+    - type: TPMLoad
       targetAverageValue: {{ .Values.scaler.targetKVCache | quote }}
 {{- end -}}
