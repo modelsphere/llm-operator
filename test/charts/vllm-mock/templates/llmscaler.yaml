@@ -9,10 +9,17 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: {{ .Release.Name }}-vllm
+  serverType: {{ .Values.scaler.serverType }}
+  {{- if .Values.metricsMock.enabled }}
+  # Driven by the metrics-mock (returns a fixed value) to simulate scaling.
+  serverAddress: "http://{{ .Release.Name }}-metrics-mock:9090"
+  {{- else }}
   serverAddress: {{ .Values.scaler.serverAddress | quote }}
+  {{- end }}
+  {{- with .Values.scaler.selector }}
   selector:
-    model_name: "opt-125m"
-  serverType: Custom
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   {{- with .Values.scaler.serverHeaders }}
   serverHeaders:
     {{- toYaml . | nindent 4 }}
@@ -20,6 +27,5 @@ spec:
   minReplicas: {{ .Values.scaler.minReplicas }}
   maxReplicas: {{ .Values.scaler.maxReplicas }}
   metrics:
-    - type: TPMLoad
-      targetAverageValue: {{ .Values.scaler.targetKVCache | quote }}
+    {{- toYaml .Values.scaler.metrics | nindent 4 }}
 {{- end -}}

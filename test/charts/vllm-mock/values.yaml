@@ -26,19 +26,41 @@ scaler:
   minReplicas: 1
   maxReplicas: 5
   syncPeriodSeconds: 10
-  serverAddress: "http://llm-monitor.llm-monitor.svc:8080"
-  targetKVCache: "80%"
-  # Extra HTTP headers sent with each metric-fetch request (e.g. auth for llm-monitor)
-  serverHeaders:
-    Authorization: "Basic YWRtaW46NHBkYWRtaW4yMDI2IQ=="
+  # Metric source: Prometheus scrapes vLLM via the serviceMonitor below.
+  serverType: Prometheus
+  # Prometheus query endpoint (the /api/v1/query base). Adjust to your cluster;
+  # this is the headless Service the Prometheus Operator creates by default.
+  serverAddress: "http://prometheus-operated.monitoring.svc:9090"
+  # PromQL label filter. Must match vLLM's model_name label, which equals the
+  # --served-model-name arg (model.name above).
+  selector:
+    model_name: "facebook/opt-125m"
+  # Optional HTTP headers for the metrics query (e.g. auth for a secured
+  # Prometheus). Empty for a typical in-cluster Prometheus.
+  serverHeaders: {}
+  metrics:
+    - type: KVCacheUtilization
+      targetAverageValue: "80%"
+
+# Deterministic scale-op simulation. When enabled, the scaler queries this mock
+# instead of real Prometheus, so you can drive scaling by hand: set `value`
+# above the target (e.g. 0.95 vs 80%) to scale toward maxReplicas, below it
+# (e.g. 0.10) to scale toward minReplicas. Note: the value is static regardless
+# of replica count, so it pegs to the min/max bound rather than settling.
+metricsMock:
+  enabled: false
+  image: "hashicorp/http-echo:0.2.3"
+  # Fraction 0-1 for KVCacheUtilization (compared against targetAverageValue).
+  value: "0.95"
 
 serviceMonitor:
   # Requires the Prometheus Operator CRDs (monitoring.coreos.com) to be installed.
-  enabled: false
+  enabled: true
   # vLLM exposes Prometheus metrics on the inference port at /metrics
   path: /metrics
   interval: 15s
   scrapeTimeout: 10s
   # Extra labels so the cluster's Prometheus serviceMonitorSelector picks it up,
   # e.g. { release: kube-prometheus-stack }
-  labels: {}
+  labels:
+    release: kube-prometheus-stack
