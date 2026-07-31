@@ -10,6 +10,17 @@ model:
   maxLen: "1024"
   gpus: "1"
 
+# Graceful shutdown / cache-aware scale-down draining.
+# Must be >= lifecycle.preStop.drainSeconds plus the longest in-flight request.
+terminationGracePeriodSeconds: 60
+lifecycle:
+  preStop:
+    enabled: true
+    # Seconds vLLM keeps serving after termination starts, so the pod is
+    # dropped from Service endpoints (no new requests) and in-flight requests
+    # drain before SIGTERM is delivered.
+    drainSeconds: 30
+
 scaler:
   enabled: true
   minReplicas: 1

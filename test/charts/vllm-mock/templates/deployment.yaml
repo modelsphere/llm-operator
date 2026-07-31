@@ -14,6 +14,9 @@ spec:
       labels:
         app: {{ .Release.Name }}-vllm
     spec:
+      # Upper bound for graceful shutdown: preStop drain + in-flight request
+      # completion must finish within this window, else the pod is SIGKILLed.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       containers:
       - name: vllm
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -34,6 +37,16 @@ spec:
         resources:
           limits:
             nvidia.com/gpu: "{{ .Values.model.gpus }}"
+        {{- if .Values.lifecycle.preStop.enabled }}
+        lifecycle:
+          preStop:
+            # Runs before SIGTERM. Sleeping here keeps vLLM serving while the
+            # pod is being removed from the Service endpoints, so the router
+            # stops sending NEW requests and in-flight ones can drain. No
+            # dependency on an external drain API.
+            exec:
+              command: ["/bin/sh", "-c", "sleep {{ .Values.lifecycle.preStop.drainSeconds }}"]
+        {{- end }}
         readinessProbe:
           httpGet:
             path: /health
