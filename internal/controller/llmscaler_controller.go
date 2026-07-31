@@ -213,11 +213,12 @@ func fetchMetricFromCustom(serverAddress string, metricType autoscalingv1alpha1.
 	httpClient := &http.Client{Timeout: 5 * time.Second}
 
 	var endpoint string
-	if metricType == autoscalingv1alpha1.MetricTypeTPMLoad {
+	switch metricType {
+	case autoscalingv1alpha1.MetricTypeTPMLoad:
 		endpoint = "/api/tpm_load"
-	} else if metricType == autoscalingv1alpha1.MetricTypeCapacityLoad {
+	case autoscalingv1alpha1.MetricTypeCapacityLoad:
 		endpoint = "/api/capacity_load"
-	} else {
+	default:
 		return 0, fmt.Errorf("unsupported custom metric type: %s", metricType)
 	}
 
@@ -321,8 +322,8 @@ func fetchMetricFromUpstream(serverAddress string, metricType autoscalingv1alpha
 	}
 	applyHeaders(req, headers)
 
-	client := http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
+	cl := http.Client{Timeout: 5 * time.Second}
+	resp, err := cl.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("failed to query prometheus: %w", err)
 	}
