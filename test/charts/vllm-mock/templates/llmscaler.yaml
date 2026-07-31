@@ -12,7 +12,7 @@ spec:
   serverType: {{ .Values.scaler.serverType }}
   {{- if .Values.metricsMock.enabled }}
   # Driven by the metrics-mock (returns a fixed value) to simulate scaling.
-  serverAddress: "http://{{ .Release.Name }}-metrics-mock:9090"
+  serverAddress: "http://{{ .Release.Name }}-metrics-mock.{{ .Release.Namespace }}:9090"
   {{- else }}
   serverAddress: {{ .Values.scaler.serverAddress | quote }}
   {{- end }}
