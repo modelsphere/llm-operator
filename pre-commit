@@ -1,0 +1,115 @@
+#!/bin/bash
+
+set -e
+
+echo "Running pre-commit checks..."
+
+# Get list of staged files (macOS bash 3.2 compatible)
+set -f
+IFS=$'\n' STAGED_FILES=($(git diff --cached --name-only --diff-filter=ACM))
+set +f
+unset IFS
+
+if [ "${#STAGED_FILES[@]}" -eq 0 ]; then
+    echo "No staged files. Skipping checks."
+    exit 0
+fi
+
+# --- Per-file stash of unstaged changes ---
+# For each staged file that also has unstaged edits, capture the
+# working-tree-vs-index diff as a patch, then reset the working tree to the
+# index version so formatters operate only on what is being committed.
+# After all checks run, formatter changes are re-staged and patches are
+# re-applied (--3way) to bring back the user's WIP. If the formatter touched
+# the same lines as an unstaged edit, the re-apply leaves a .rej file and the
+# hook fails loudly with the patch path preserved for manual recovery.
+
+ORIG_DIR=$(pwd)
+PATCH_DIR=$(mktemp -d)
+PATCH_KEEP=false
+STASHED_FILES=()  # parallel with $PATCH_DIR/0.patch, 1.patch, ...
+
+restore_unstaged() {
+    cd "$ORIG_DIR" 2>/dev/null || true
+    local i=0
+    for file in "${STASHED_FILES[@]}"; do
+        local patch="$PATCH_DIR/$i.patch"
+        if [ -s "$patch" ]; then
+            if ! git apply --3way --whitespace=nowarn "$patch" 2>/dev/null; then
+                echo ""
+                echo "⚠️  Could not re-apply unstaged changes to: $file"
+                echo "   (formatter likely touched the same lines)"
+                echo "   Your original unstaged diff is preserved at:"
+                echo "     $patch"
+                echo "   Recover manually with:"
+                echo "     git apply --reject \"$patch\""
+                PATCH_KEEP=true
+            fi
+        fi
+        i=$((i + 1))
+    done
+}
+
+cleanup() {
+    restore_unstaged
+    if ! $PATCH_KEEP; then
+        rm -rf "$PATCH_DIR"
+    fi
+}
+trap cleanup EXIT
+
+idx=0
+for file in "${STAGED_FILES[@]}"; do
+    if ! git diff --quiet -- "$file"; then
+        git diff -- "$file" > "$PATCH_DIR/$idx.patch"
+        git checkout-index --force -- "$file"
+        STASHED_FILES+=("$file")
+        idx=$((idx + 1))
+    fi
+done
+
+# --- 1. Backend Checks (Go) ---
+echo ""
+echo "[1/2] Running Go Backend Checks..."
+
+GO_FILES=()
+for file in "${STAGED_FILES[@]}"; do
+    if [[ "$file" == *.go ]]; then
+        GO_FILES+=("$file")
+    fi
+done
+
+if [ "${#GO_FILES[@]}" -gt 0 ]; then
+    echo "Running gofmt..."
+    gofmt -w "${GO_FILES[@]}"
+
+    echo "Running go vet..."
+    GO_DIRS=()
+    for file in "${GO_FILES[@]}"; do
+        dir=$(dirname "$file")
+        # Add to GO_DIRS if not already present
+        if [[ ! " ${GO_DIRS[*]} " == *" ${dir} "* ]]; then
+            GO_DIRS+=("$dir")
+        fi
+    done
+
+    for dir in "${GO_DIRS[@]}"; do
+        if ! go vet "./$dir"; then
+            echo "❌ go vet failed in ./$dir. Please fix the errors before committing."
+            exit 1
+        fi
+    done
+else
+    echo "No Go files changed. Skipping Go checks."
+fi
+
+# Re-stage formatter changes so they land in the commit. `git add` is a no-op
+# for unmodified files, so applying it to all staged files is safe.
+if ! git diff --quiet -- "${STAGED_FILES[@]}"; then
+    echo "Re-staging files updated by formatters..."
+    git add -- "${STAGED_FILES[@]}"
+fi
+
+echo ""
+echo "✅ All checks passed! Proceeding with commit."
+exit 0
