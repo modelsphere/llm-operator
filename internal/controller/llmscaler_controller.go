@@ -33,8 +33,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	autoscalingv1alpha1 "gitlab.4pd.io/inference-production-stack/llm-operator/api/v1alpha1"
 )
@@ -92,14 +94,22 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{RequeueAfter: retryPeriod}, nil
 	}
 
-	// 2. Extract current replicas
-	currentReplicas, found, err := unstructured.NestedInt64(targetObj.Object, "spec", "replicas")
+	// 2. Extract replica counts. The HPA-style calculation is scaled off the
+	// number of *ready* replicas (actual serving capacity) so we don't compound
+	// on pods that were just requested but haven't started yet. The scale-action
+	// decision compares against spec.replicas to avoid redundant writes.
+	specReplicas, found, err := unstructured.NestedInt64(targetObj.Object, "spec", "replicas")
 	if err != nil || !found {
 		// Default to 1 if not explicitly set (or handle error)
-		currentReplicas = 1
+		specReplicas = 1
+	}
+	readyReplicas, found, err := unstructured.NestedInt64(targetObj.Object, "status", "readyReplicas")
+	if err != nil || !found || readyReplicas == 0 {
+		// No ready pods reported yet (e.g. initial rollout); fall back to spec.
+		readyReplicas = specReplicas
 	}
 
-	logger.Info("Fetched target resource", "kind", targetRef.Kind, "currentReplicas", currentReplicas)
+	logger.Info("Fetched target resource", "kind", targetRef.Kind, "specReplicas", specReplicas, "readyReplicas", readyReplicas)
 
 	// 3. Fetch metrics and calculate desiredReplicas
 	// We'll calculate the desired replicas for each metric and take the maximum (standard HPA behavior)
@@ -129,9 +139,9 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			continue
 		}
 
-		// Algorithm: desiredReplicas = ceil[currentReplicas * (currentMetricValue / desiredMetricValue)]
+		// Algorithm: desiredReplicas = ceil[readyReplicas * (currentMetricValue / desiredMetricValue)]
 		ratio := currentValue / targetValue
-		metricDesired := int32(math.Ceil(float64(currentReplicas) * ratio))
+		metricDesired := int32(math.Ceil(float64(readyReplicas) * ratio))
 
 		logger.Info("Metric calculation", "metric", metric.Type, "current", currentValue, "target", targetValue, "calculatedDesired", metricDesired)
 
@@ -141,7 +151,7 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Fallback to current replicas if no metrics were successfully calculated
-	desiredReplicas := int32(currentReplicas)
+	desiredReplicas := int32(specReplicas)
 	if maxDesiredReplicas > 0 {
 		desiredReplicas = maxDesiredReplicas
 	}
@@ -155,10 +165,10 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// 4. Execute Scale Action
-	if desiredReplicas != int32(currentReplicas) {
-		logger.Info("Scaling target", "from", currentReplicas, "to", desiredReplicas)
+	if desiredReplicas != int32(specReplicas) {
+		logger.Info("Scaling target", "from", specReplicas, "to", desiredReplicas)
 
-		if desiredReplicas < int32(currentReplicas) {
+		if desiredReplicas < int32(specReplicas) {
 			// TODO: Cache-Aware Scale-Down
 			// 1. Query Cache-Aware Router API
 			// 2. Transition specific pod to Draining state
@@ -181,7 +191,7 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// 4. Update Status
-	scaler.Status.CurrentReplicas = int32(currentReplicas)
+	scaler.Status.CurrentReplicas = int32(readyReplicas)
 	scaler.Status.DesiredReplicas = desiredReplicas
 	if err := r.Status().Update(ctx, &scaler); err != nil {
 		logger.Error(err, "failed to update scaler status")
@@ -194,7 +204,10 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 // SetupWithManager sets up the controller with the Manager.
 func (r *LLMScalerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&autoscalingv1alpha1.LLMScaler{}).
+		// Ignore status-only updates so the controller's own status writes don't
+		// re-trigger reconciliation instantly. Periodic evaluation is driven by
+		// RequeueAfter(syncPeriod), which paces each scale step.
+		For(&autoscalingv1alpha1.LLMScaler{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("llmscaler").
 		Complete(r)
 }
