@@ -289,13 +289,16 @@ func fetchMetricFromUpstream(serverAddress string, metricType autoscalingv1alpha
 		return 0, fmt.Errorf("serverAddress is empty")
 	}
 
-	// 1. Determine the metric name
-	var metricName string
+	// 1. Determine the metric name(s). Multiple candidates are combined with
+	// PromQL `or` to stay compatible across vLLM engine versions: the V0 name
+	// vllm:gpu_cache_usage_perc was renamed to vllm:kv_cache_usage_perc in the
+	// V1 engine (default since mid-2025). Both are 0-1 gauges.
+	var metricNames []string
 	switch metricType {
 	case autoscalingv1alpha1.MetricTypeKVCacheUtilization:
-		metricName = "vllm:gpu_cache_usage_perc"
+		metricNames = []string{"vllm:kv_cache_usage_perc", "vllm:gpu_cache_usage_perc"}
 	case autoscalingv1alpha1.MetricTypeQueueDepth:
-		metricName = "vllm:num_requests_waiting"
+		metricNames = []string{"vllm:num_requests_waiting"}
 	default:
 		return 0, fmt.Errorf("unknown metric type: %s", metricType)
 	}
@@ -310,8 +313,12 @@ func fetchMetricFromUpstream(serverAddress string, metricType autoscalingv1alpha
 		selectorStr = "{" + strings.Join(labelSelectors, ",") + "}"
 	}
 
-	// 3. Construct the full PromQL query
-	promQL := fmt.Sprintf("avg(%s%s)", metricName, selectorStr)
+	// 3. Construct the full PromQL query, combining metric-name candidates with `or`
+	terms := make([]string, len(metricNames))
+	for i, name := range metricNames {
+		terms[i] = name + selectorStr
+	}
+	promQL := fmt.Sprintf("avg(%s)", strings.Join(terms, " or "))
 
 	// 4. Make the HTTP request
 	queryURL := fmt.Sprintf("%s/api/v1/query?query=%s", strings.TrimRight(serverAddress, "/"), url.QueryEscape(promQL))
