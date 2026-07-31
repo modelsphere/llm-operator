@@ -111,10 +111,10 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 		if scaler.Spec.ServerType == autoscalingv1alpha1.ServerTypeCustom {
 			// Fetch current metric value using the custom llm-monitor /api/capacity_load API
-			currentValue, err = fetchMetricFromCustom(scaler.Spec.ServerAddress, metric.Type, scaler.Spec.Selector)
+			currentValue, err = fetchMetricFromCustom(scaler.Spec.ServerAddress, metric.Type, scaler.Spec.Selector, scaler.Spec.ServerHeaders)
 		} else {
 			// Default to Prometheus
-			currentValue, err = fetchMetricFromUpstream(scaler.Spec.ServerAddress, metric.Type, scaler.Spec.Selector)
+			currentValue, err = fetchMetricFromUpstream(scaler.Spec.ServerAddress, metric.Type, scaler.Spec.Selector, scaler.Spec.ServerHeaders)
 		}
 
 		if err != nil {
@@ -200,7 +200,7 @@ func (r *LLMScalerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // fetchMetricFromCustom queries the custom metrics server API (e.g. llm-monitor /api/capacity_load)
-func fetchMetricFromCustom(serverAddress string, metricType autoscalingv1alpha1.MetricType, selector map[string]string) (float64, error) {
+func fetchMetricFromCustom(serverAddress string, metricType autoscalingv1alpha1.MetricType, selector, headers map[string]string) (float64, error) {
 	if serverAddress == "" {
 		return 0, fmt.Errorf("serverAddress is empty, cannot fetch custom metrics")
 	}
@@ -229,9 +229,9 @@ func fetchMetricFromCustom(serverAddress string, metricType autoscalingv1alpha1.
 		return 0, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Add headers from the full example
+	// Default headers; any entry in the CRD's serverHeaders overrides these.
 	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Authorization", "Basic YWRtaW46NHBkYWRtaW4yMDI2IQ==")
+	applyHeaders(req, headers)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -265,10 +265,17 @@ func fetchMetricFromCustom(serverAddress string, metricType autoscalingv1alpha1.
 	return latestSample.UtilPct, nil
 }
 
+// applyHeaders sets the given headers on the request, overriding any existing values.
+func applyHeaders(req *http.Request, headers map[string]string) {
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+}
+
 // parseTargetValue handles parsing values like "80%" or "5" into a float64
 func parseTargetValue(val string) (float64, error) {
 	val = strings.TrimSpace(val)
-	if before, ok :=strings.CutSuffix(val, "%"); ok  {
+	if before, ok := strings.CutSuffix(val, "%"); ok {
 		numStr := before
 		return strconv.ParseFloat(numStr, 64)
 	}
@@ -276,7 +283,7 @@ func parseTargetValue(val string) (float64, error) {
 }
 
 // fetchMetricFromUpstream queries the metrics server (e.g., Prometheus)
-func fetchMetricFromUpstream(serverAddress string, metricType autoscalingv1alpha1.MetricType, selector map[string]string) (float64, error) {
+func fetchMetricFromUpstream(serverAddress string, metricType autoscalingv1alpha1.MetricType, selector, headers map[string]string) (float64, error) {
 	if serverAddress == "" {
 		return 0, fmt.Errorf("serverAddress is empty")
 	}
@@ -308,8 +315,14 @@ func fetchMetricFromUpstream(serverAddress string, metricType autoscalingv1alpha
 	// 4. Make the HTTP request
 	queryURL := fmt.Sprintf("%s/api/v1/query?query=%s", strings.TrimRight(serverAddress, "/"), url.QueryEscape(promQL))
 
+	req, err := http.NewRequest("GET", queryURL, nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create request: %w", err)
+	}
+	applyHeaders(req, headers)
+
 	client := http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(queryURL)
+	resp, err := client.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("failed to query prometheus: %w", err)
 	}

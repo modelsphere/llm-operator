@@ -83,6 +83,12 @@ type LLMScalerSpec struct {
 	// +optional
 	Selector map[string]string `json:"selector,omitempty"`
 
+	// serverHeaders are additional HTTP headers sent with every metric-fetch
+	// request to the metrics server (e.g. Authorization for a Custom llm-monitor
+	// server or a secured Prometheus). Values are used verbatim.
+	// +optional
+	ServerHeaders map[string]string `json:"serverHeaders,omitempty"`
+
 	// syncPeriodSeconds is the interval at which the autoscaler evaluates metrics and scales. Defaults to 15.
 	// +kubebuilder:default=15
 	// +optional

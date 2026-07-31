@@ -13,6 +13,10 @@ spec:
   selector:
     model_name: "opt-125m"
   serverType: Custom
+  {{- with .Values.scaler.serverHeaders }}
+  serverHeaders:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   minReplicas: {{ .Values.scaler.minReplicas }}
   maxReplicas: {{ .Values.scaler.maxReplicas }}
   metrics:

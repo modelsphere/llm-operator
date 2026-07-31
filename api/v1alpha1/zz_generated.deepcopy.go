@@ -95,6 +95,13 @@ func (in *LLMScalerSpec) DeepCopyInto(out *LLMScalerSpec) {
 			(*out)[key] = val
 		}
 	}
+	if in.ServerHeaders != nil {
+		in, out := &in.ServerHeaders, &out.ServerHeaders
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
 	if in.Metrics != nil {
 		in, out := &in.Metrics, &out.Metrics
 		*out = make([]MetricSpec, len(*in))

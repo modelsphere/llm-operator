@@ -120,6 +120,14 @@ spec:
                 description: serverAddress is the upstream metrics server address
                   (e.g., http://prometheus:9090)
                 type: string
+              serverHeaders:
+                additionalProperties:
+                  type: string
+                description: |-
+                  serverHeaders are additional HTTP headers sent with every metric-fetch
+                  request to the metrics server (e.g. Authorization for a Custom llm-monitor
+                  server or a secured Prometheus). Values are used verbatim.
+                type: object
               serverType:
                 default: Prometheus
                 description: serverType defines the type of metrics server (Prometheus
