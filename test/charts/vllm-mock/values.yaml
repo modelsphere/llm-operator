@@ -40,9 +40,13 @@ scaler:
   # the query to THIS deployment's pods — important when several deployments (even
   # same-named releases in different namespaces) serve the same model.
   metrics:
-    - name: kv-cache
-      query: 'avg(vllm:kv_cache_usage_perc{__SCOPE__})'
-      target: "0.8"
+    # Queue depth (requests waiting per replica). This is the signal that
+    # actually moves under real load on a small model — its KV cache barely
+    # fills, but requests queue once concurrency exceeds vLLM's max-num-seqs.
+    # Scale up when the average waiting requests per replica exceeds target.
+    - name: queue-depth
+      query: 'avg(vllm:num_requests_waiting{__SCOPE__})'
+      target: "5"
   # Cache-aware scale-down. deletionCostQuery is a PromQL instant query that
   # returns one series per pod (carrying a "pod" label); its value becomes that
   # pod's controller.kubernetes.io/pod-deletion-cost (lower = deleted first), so
@@ -57,14 +61,14 @@ scaler:
 
 # Deterministic scale-op simulation. When enabled, the scaler queries this mock
 # instead of real Prometheus, so you can drive scaling by hand: set `value`
-# above the target (e.g. 0.95 vs 80%) to scale toward maxReplicas, below it
-# (e.g. 0.10) to scale toward minReplicas. Note: the value is static regardless
+# above the target (e.g. 10 vs target 5) to scale toward maxReplicas, below it
+# (e.g. 0) to scale toward minReplicas. Note: the value is static regardless
 # of replica count, so it pegs to the min/max bound rather than settling.
 metricsMock:
   enabled: false
   image: "hashicorp/http-echo:0.2.3"
   # The value the mock returns for the metric query (compared against target).
-  value: "0.95"
+  value: "10"
 
 serviceMonitor:
   # Requires the Prometheus Operator CRDs (monitoring.coreos.com) to be installed.
