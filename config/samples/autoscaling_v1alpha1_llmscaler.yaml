@@ -11,16 +11,17 @@ spec:
     kind: Deployment
     name: vllm-opt-125m
   serverAddress: "http://prometheus-operated.monitoring.svc:9090"
-  selector:
-    model_name: "facebook/opt-125m"
   minReplicas: 1
   maxReplicas: 5
   syncPeriodSeconds: 15
   retryPeriodSeconds: 10
   metrics:
-    - type: KVCacheUtilization
-      targetAverageValue: "80%"
+    # Scope the query to THIS deployment's pods (not just the model) so multiple
+    # deployments serving the same model don't get averaged together.
+    - name: kv-cache
+      query: 'avg(vllm:kv_cache_usage_perc{namespace="default", app="vllm-opt-125m"})'
+      target: "0.8"
   scaleDown:
     stabilizationWindowSeconds: 300
     behavior: CacheAware
-    deletionCostQuery: 'vllm:kv_cache_usage_perc{namespace="default"} * 100'
+    deletionCostQuery: 'vllm:kv_cache_usage_perc{namespace="default", app="vllm-opt-125m"} * 100'

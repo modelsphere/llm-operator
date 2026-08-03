@@ -30,16 +30,19 @@ scaler:
   # Prometheus query endpoint (the /api/v1/query base). Adjust to your cluster;
   # this is the headless Service the Prometheus Operator creates by default.
   serverAddress: "http://prometheus-operated.monitoring.svc:9090"
-  # PromQL label filter. Must match vLLM's model_name label, which equals the
-  # --served-model-name arg (model.name above).
-  selector:
-    model_name: "facebook/opt-125m"
   # Optional HTTP headers for the metrics query (e.g. auth for a secured
   # Prometheus). Empty for a typical in-cluster Prometheus.
   serverHeaders: {}
+  # Each metric is a PromQL instant query (returning a single averaged value)
+  # plus a per-replica target. Scaling compares them as
+  # ceil(readyReplicas * value / target). Bake label filters into the query.
+  # The __SCOPE__ token expands to namespace="<ns>", app="<release>-vllm", scoping
+  # the query to THIS deployment's pods — important when several deployments (even
+  # same-named releases in different namespaces) serve the same model.
   metrics:
-    - type: KVCacheUtilization
-      targetAverageValue: "80%"
+    - name: kv-cache
+      query: 'avg(vllm:kv_cache_usage_perc{__SCOPE__})'
+      target: "0.8"
   # Cache-aware scale-down. deletionCostQuery is a PromQL instant query that
   # returns one series per pod (carrying a "pod" label); its value becomes that
   # pod's controller.kubernetes.io/pod-deletion-cost (lower = deleted first), so
@@ -49,8 +52,8 @@ scaler:
   scaleDown:
     behavior: CacheAware
     deletionCostQuery: ""
-    # Example (kube-prometheus-stack scraping vLLM with a "pod" label):
-    #   deletionCostQuery: 'vllm:kv_cache_usage_perc{namespace="default"} * 100'
+    # Example (scoped to this deployment via __SCOPE__):
+    #   deletionCostQuery: 'vllm:kv_cache_usage_perc{__SCOPE__} * 100'
 
 # Deterministic scale-op simulation. When enabled, the scaler queries this mock
 # instead of real Prometheus, so you can drive scaling by hand: set `value`
@@ -60,7 +63,7 @@ scaler:
 metricsMock:
   enabled: false
   image: "hashicorp/http-echo:0.2.3"
-  # Fraction 0-1 for KVCacheUtilization (compared against targetAverageValue).
+  # The value the mock returns for the metric query (compared against target).
   value: "0.95"
 
 serviceMonitor:
@@ -74,3 +77,7 @@ serviceMonitor:
   # e.g. { release: kube-prometheus-stack }
   labels:
     release: kube-prometheus-stack
+  # Pod labels copied onto the scraped series. `app` lets metric queries scope to
+  # a single deployment (app="<release>-vllm") when several serve the same model.
+  podTargetLabels:
+    - app

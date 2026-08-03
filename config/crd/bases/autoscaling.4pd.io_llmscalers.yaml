@@ -66,20 +66,30 @@ spec:
                 description: metrics contains the specifications for which to use
                   to calculate the desired replica count
                 items:
-                  description: MetricSpec defines the metric to monitor for scaling
-                    decisions
+                  description: MetricSpec defines a Prometheus query and the target
+                    value to scale on.
                   properties:
-                    targetAverageValue:
+                    name:
+                      description: name is an optional identifier for this metric,
+                        used in logs and events.
                       type: string
-                    type:
-                      description: type is the vLLM metric to scale on.
-                      enum:
-                      - KVCacheUtilization
-                      - QueueDepth
+                    query:
+                      description: |-
+                        query is a PromQL instant query returning the current metric value as a
+                        single (averaged) scalar. Scaling compares it to target as
+                          desiredReplicas = ceil(readyReplicas * value / target)
+                        so it should be a per-replica value — e.g. wrap it in avg(...). Bake any
+                        label filters into the query. Example:
+                          avg(vllm:kv_cache_usage_perc{model_name="opt-125m"})
+                      type: string
+                    target:
+                      description: |-
+                        target is the desired per-replica value of the query result. When the
+                        measured value exceeds target, replicas scale up proportionally.
                       type: string
                   required:
-                  - targetAverageValue
-                  - type
+                  - query
+                  - target
                   type: object
                 type: array
               minReplicas:
@@ -138,11 +148,6 @@ spec:
                       scale-down decisions.
                     format: int32
                     type: integer
-                type: object
-              selector:
-                additionalProperties:
-                  type: string
-                description: selector is used to filter metrics for the target resource
                 type: object
               serverAddress:
                 description: serverAddress is the Prometheus query endpoint (e.g.

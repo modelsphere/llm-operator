@@ -15,20 +15,34 @@ spec:
   {{- else }}
   serverAddress: {{ .Values.scaler.serverAddress | quote }}
   {{- end }}
-  {{- with .Values.scaler.selector }}
-  selector:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
   {{- with .Values.scaler.serverHeaders }}
   serverHeaders:
     {{- toYaml . | nindent 4 }}
   {{- end }}
   minReplicas: {{ .Values.scaler.minReplicas }}
   maxReplicas: {{ .Values.scaler.maxReplicas }}
+  {{- /* __SCOPE__ in any query expands to namespace="<ns>", app="<release>-vllm"
+         to scope it to THIS deployment's pods (app needs podTargetLabels: [app]
+         on the ServiceMonitor; namespace is always present). */}}
+  {{- $scope := printf "namespace=\"%s\", app=\"%s-vllm\"" .Release.Namespace .Release.Name }}
   metrics:
-    {{- toYaml .Values.scaler.metrics | nindent 4 }}
+    {{- range .Values.scaler.metrics }}
+    - query: {{ .query | replace "__SCOPE__" $scope | quote }}
+      target: {{ .target | quote }}
+      {{- with .name }}
+      name: {{ . | quote }}
+      {{- end }}
+    {{- end }}
   {{- with .Values.scaler.scaleDown }}
   scaleDown:
-    {{- toYaml . | nindent 4 }}
+    {{- with .behavior }}
+    behavior: {{ . }}
+    {{- end }}
+    {{- with .stabilizationWindowSeconds }}
+    stabilizationWindowSeconds: {{ . }}
+    {{- end }}
+    {{- with .deletionCostQuery }}
+    deletionCostQuery: {{ . | replace "__SCOPE__" $scope | quote }}
+    {{- end }}
   {{- end }}
 {{- end -}}

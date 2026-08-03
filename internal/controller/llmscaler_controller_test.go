@@ -110,8 +110,8 @@ var _ = Describe("LLMScaler Controller", func() {
 					MaxReplicas:   5,
 					Metrics: []autoscalingv1alpha1.MetricSpec{
 						{
-							Type:               autoscalingv1alpha1.MetricTypeKVCacheUtilization,
-							TargetAverageValue: "50%",
+							Query:  `avg(vllm:kv_cache_usage_perc)`,
+							Target: "0.5",
 						},
 					},
 				},
@@ -154,9 +154,8 @@ var _ = Describe("LLMScaler Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// We expect the Reconciler to scale from 1 to 2 because:
-			// fetchMetricFromUpstream mock returns 85.0 for KVCacheUtilization.
-			// The target is 50%.
-			// ceil(1 * (85 / 50)) = ceil(1.7) = 2
+			// the mock Prometheus returns 0.85 for the query, target is 0.5,
+			// ceil(1 * 0.85/0.5) = ceil(1.7) = 2
 			Expect(*deploy.Spec.Replicas).To(Equal(int32(2)))
 		})
 	})

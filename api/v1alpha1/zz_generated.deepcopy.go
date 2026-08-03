@@ -88,13 +88,6 @@ func (in *LLMScalerList) DeepCopyObject() runtime.Object {
 func (in *LLMScalerSpec) DeepCopyInto(out *LLMScalerSpec) {
 	*out = *in
 	out.TargetRef = in.TargetRef
-	if in.Selector != nil {
-		in, out := &in.Selector, &out.Selector
-		*out = make(map[string]string, len(*in))
-		for key, val := range *in {
-			(*out)[key] = val
-		}
-	}
 	if in.ServerHeaders != nil {
 		in, out := &in.ServerHeaders, &out.ServerHeaders
 		*out = make(map[string]string, len(*in))

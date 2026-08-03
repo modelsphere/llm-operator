@@ -12,10 +12,17 @@ source.
 
 - **Target** (`spec.targetRef`): any `Deployment`, `StatefulSet`, or
   `LeaderWorkerSet` (handled generically via the unstructured client).
-- **Metric source**: Prometheus, via instant PromQL queries against
-  `spec.serverAddress`. `KVCacheUtilization` → `vllm:kv_cache_usage_perc` (with a
-  `vllm:gpu_cache_usage_perc` fallback for the pre-V1 engine); `QueueDepth` →
-  `vllm:num_requests_waiting`.
+- **Metrics** (`spec.metrics`): each entry is a **PromQL instant query** plus a
+  per-replica `target`, evaluated against `spec.serverAddress`. The query should
+  return a single averaged value (e.g. wrap it in `avg(...)`), and label filters
+  are baked into the query itself. **Scope the query to this deployment's pods**,
+  not just the model — otherwise multiple deployments serving the same model are
+  averaged together. Filter on `namespace` plus a per-deployment label such as
+  `app` (the chart's ServiceMonitor exposes `app` via `podTargetLabels`;
+  `namespace` is always present). `namespace` matters because release names can
+  repeat across namespaces. Example:
+  `query: avg(vllm:kv_cache_usage_perc{namespace="default", app="opt-125m-vllm"})`,
+  `target: "0.8"`. The same applies to `scaleDown.deletionCostQuery`.
 - **Headers** (`spec.serverHeaders`): arbitrary headers sent with every
   metric-fetch request (e.g. `Authorization` for a secured Prometheus).
 

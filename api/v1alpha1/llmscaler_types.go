@@ -31,19 +31,23 @@ type TargetRef struct {
 	Name       string `json:"name"`
 }
 
-type MetricType string
-
-const (
-	MetricTypeKVCacheUtilization MetricType = "KVCacheUtilization"
-	MetricTypeQueueDepth         MetricType = "QueueDepth"
-)
-
-// MetricSpec defines the metric to monitor for scaling decisions
+// MetricSpec defines a Prometheus query and the target value to scale on.
 type MetricSpec struct {
-	// type is the vLLM metric to scale on.
-	// +kubebuilder:validation:Enum=KVCacheUtilization;QueueDepth
-	Type               MetricType `json:"type"`
-	TargetAverageValue string     `json:"targetAverageValue"`
+	// name is an optional identifier for this metric, used in logs and events.
+	// +optional
+	Name string `json:"name,omitempty"`
+
+	// query is a PromQL instant query returning the current metric value as a
+	// single (averaged) scalar. Scaling compares it to target as
+	//   desiredReplicas = ceil(readyReplicas * value / target)
+	// so it should be a per-replica value — e.g. wrap it in avg(...). Bake any
+	// label filters into the query. Example:
+	//   avg(vllm:kv_cache_usage_perc{model_name="opt-125m"})
+	Query string `json:"query"`
+
+	// target is the desired per-replica value of the query result. When the
+	// measured value exceeds target, replicas scale up proportionally.
+	Target string `json:"target"`
 }
 
 // ScaleDownSpec defines cache-aware scale down behavior
@@ -87,10 +91,6 @@ type LLMScalerSpec struct {
 
 	// serverAddress is the Prometheus query endpoint (e.g. http://prometheus:9090)
 	ServerAddress string `json:"serverAddress"`
-
-	// selector is used to filter metrics for the target resource
-	// +optional
-	Selector map[string]string `json:"selector,omitempty"`
 
 	// serverHeaders are additional HTTP headers sent with every metric-fetch
 	// request to Prometheus (e.g. Authorization for a secured endpoint). Values

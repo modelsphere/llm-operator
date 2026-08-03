@@ -129,24 +129,23 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	var maxDesiredReplicas int32 = 0
 
 	for _, metric := range scaler.Spec.Metrics {
-		currentValue, err := fetchMetricFromUpstream(scaler.Spec.ServerAddress, metric.Type, scaler.Spec.Selector, scaler.Spec.ServerHeaders)
+		currentValue, err := queryPrometheusScalar(scaler.Spec.ServerAddress, metric.Query, scaler.Spec.ServerHeaders)
 		if err != nil {
-			logger.Error(err, "failed to fetch metric", "metric", metric.Type)
+			logger.Error(err, "failed to fetch metric", "name", metric.Name, "query", metric.Query)
 			continue
 		}
 
-		// Parse target value (e.g., "80%" or "5")
-		targetValue, err := parseTargetValue(metric.TargetAverageValue)
+		targetValue, err := parseTargetValue(metric.Target)
 		if err != nil {
-			logger.Error(err, "invalid target value", "target", metric.TargetAverageValue)
+			logger.Error(err, "invalid target value", "target", metric.Target)
 			continue
 		}
 
-		// Algorithm: desiredReplicas = ceil[readyReplicas * (currentMetricValue / desiredMetricValue)]
+		// Algorithm: desiredReplicas = ceil[readyReplicas * (currentValue / target)]
 		ratio := currentValue / targetValue
 		metricDesired := int32(math.Ceil(float64(readyReplicas) * ratio))
 
-		logger.Info("Metric calculation", "metric", metric.Type, "current", currentValue, "target", targetValue, "calculatedDesired", metricDesired)
+		logger.Info("Metric calculation", "name", metric.Name, "query", metric.Query, "current", currentValue, "target", targetValue, "calculatedDesired", metricDesired)
 
 		if metricDesired > maxDesiredReplicas {
 			maxDesiredReplicas = metricDesired
@@ -323,10 +322,15 @@ func clampToInt32(f float64) int32 {
 	}
 }
 
-// queryPodDeletionCosts runs a PromQL instant query that returns per-pod values
-// and maps them by the "pod" label, for deriving pod-deletion-cost from a
-// user-defined expression at scale-down time.
-func queryPodDeletionCosts(serverAddress, promQL string, headers map[string]string) (map[string]float64, error) {
+// promSample is one element of a PromQL instant-query result vector.
+type promSample struct {
+	labels map[string]string
+	value  float64
+}
+
+// promInstantQuery runs a PromQL instant query against Prometheus and returns
+// the result vector as (labels, value) samples.
+func promInstantQuery(serverAddress, promQL string, headers map[string]string) ([]promSample, error) {
 	if serverAddress == "" {
 		return nil, fmt.Errorf("serverAddress is empty")
 	}
@@ -366,10 +370,9 @@ func queryPodDeletionCosts(serverAddress, promQL string, headers map[string]stri
 		return nil, fmt.Errorf("prometheus query failed with status: %s", promResp.Status)
 	}
 
-	costs := make(map[string]float64, len(promResp.Data.Result))
+	samples := make([]promSample, 0, len(promResp.Data.Result))
 	for _, res := range promResp.Data.Result {
-		pod := res.Metric["pod"]
-		if pod == "" || len(res.Value) != 2 {
+		if len(res.Value) != 2 {
 			continue
 		}
 		valStr, ok := res.Value[1].(string)
@@ -380,7 +383,38 @@ func queryPodDeletionCosts(serverAddress, promQL string, headers map[string]stri
 		if err != nil {
 			continue
 		}
-		costs[pod] = v
+		samples = append(samples, promSample{labels: res.Metric, value: v})
+	}
+	return samples, nil
+}
+
+// queryPrometheusScalar runs an instant query expected to return a single
+// (averaged) value and returns the first sample.
+func queryPrometheusScalar(serverAddress, promQL string, headers map[string]string) (float64, error) {
+	samples, err := promInstantQuery(serverAddress, promQL, headers)
+	if err != nil {
+		return 0, err
+	}
+	if len(samples) == 0 {
+		return 0, fmt.Errorf("query returned no data: %s", promQL)
+	}
+	return samples[0].value, nil
+}
+
+// queryPodDeletionCosts runs a PromQL instant query that returns per-pod values
+// and maps them by the "pod" label, for deriving pod-deletion-cost from a
+// user-defined expression at scale-down time.
+func queryPodDeletionCosts(serverAddress, promQL string, headers map[string]string) (map[string]float64, error) {
+	samples, err := promInstantQuery(serverAddress, promQL, headers)
+	if err != nil {
+		return nil, err
+	}
+
+	costs := make(map[string]float64, len(samples))
+	for _, s := range samples {
+		if pod := s.labels["pod"]; pod != "" {
+			costs[pod] = s.value
+		}
 	}
 	if len(costs) == 0 {
 		return nil, fmt.Errorf("deletion-cost query returned no per-pod samples (missing 'pod' label?)")
@@ -403,106 +437,4 @@ func parseTargetValue(val string) (float64, error) {
 		return strconv.ParseFloat(numStr, 64)
 	}
 	return strconv.ParseFloat(val, 64)
-}
-
-// fetchMetricFromUpstream queries the metrics server (e.g., Prometheus)
-func fetchMetricFromUpstream(serverAddress string, metricType autoscalingv1alpha1.MetricType, selector, headers map[string]string) (float64, error) {
-	if serverAddress == "" {
-		return 0, fmt.Errorf("serverAddress is empty")
-	}
-
-	// 1. Determine the metric name(s). Multiple candidates are combined with
-	// PromQL `or` to stay compatible across vLLM engine versions: the V0 name
-	// vllm:gpu_cache_usage_perc was renamed to vllm:kv_cache_usage_perc in the
-	// V1 engine (default since mid-2025). Both are 0-1 gauges.
-	var metricNames []string
-	switch metricType {
-	case autoscalingv1alpha1.MetricTypeKVCacheUtilization:
-		metricNames = []string{"vllm:kv_cache_usage_perc", "vllm:gpu_cache_usage_perc"}
-	case autoscalingv1alpha1.MetricTypeQueueDepth:
-		metricNames = []string{"vllm:num_requests_waiting"}
-	default:
-		return 0, fmt.Errorf("unknown metric type: %s", metricType)
-	}
-
-	// 2. Build the PromQL selector string
-	var labelSelectors []string
-	for k, v := range selector {
-		labelSelectors = append(labelSelectors, fmt.Sprintf(`%s="%s"`, k, v))
-	}
-	selectorStr := ""
-	if len(labelSelectors) > 0 {
-		selectorStr = "{" + strings.Join(labelSelectors, ",") + "}"
-	}
-
-	// 3. Construct the full PromQL query, combining metric-name candidates with `or`
-	terms := make([]string, len(metricNames))
-	for i, name := range metricNames {
-		terms[i] = name + selectorStr
-	}
-	promQL := fmt.Sprintf("avg(%s)", strings.Join(terms, " or "))
-
-	// 4. Make the HTTP request
-	queryURL := fmt.Sprintf("%s/api/v1/query?query=%s", strings.TrimRight(serverAddress, "/"), url.QueryEscape(promQL))
-
-	req, err := http.NewRequest("GET", queryURL, nil)
-	if err != nil {
-		return 0, fmt.Errorf("failed to create request: %w", err)
-	}
-	applyHeaders(req, headers)
-
-	cl := http.Client{Timeout: 5 * time.Second}
-	resp, err := cl.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("failed to query prometheus: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return 0, fmt.Errorf("prometheus returned status %d: %s", resp.StatusCode, string(bodyBytes))
-	}
-
-	// 5. Parse the JSON response
-	var promResp struct {
-		Status string `json:"status"`
-		Data   struct {
-			Result []struct {
-				Value []any `json:"value"`
-			} `json:"result"`
-		} `json:"data"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&promResp); err != nil {
-		return 0, fmt.Errorf("failed to decode prometheus response: %w", err)
-	}
-
-	if promResp.Status != "success" {
-		return 0, fmt.Errorf("prometheus query failed with status: %s", promResp.Status)
-	}
-
-	if len(promResp.Data.Result) == 0 {
-		return 0, fmt.Errorf("no metric data found for query: %s", promQL)
-	}
-
-	valArray := promResp.Data.Result[0].Value
-	if len(valArray) != 2 {
-		return 0, fmt.Errorf("unexpected value format from prometheus")
-	}
-
-	valStr, ok := valArray[1].(string)
-	if !ok {
-		return 0, fmt.Errorf("prometheus metric value is not a string")
-	}
-
-	metricValue, err := strconv.ParseFloat(valStr, 64)
-	if err != nil {
-		return 0, fmt.Errorf("failed to parse metric value as float: %w", err)
-	}
-
-	if metricType == autoscalingv1alpha1.MetricTypeKVCacheUtilization && metricValue <= 1.0 {
-		metricValue = metricValue * 100
-	}
-
-	return metricValue, nil
 }
