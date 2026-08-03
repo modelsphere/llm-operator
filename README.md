@@ -40,6 +40,11 @@ desired = clamp(desired, minReplicas, maxReplicas)
 - The controller watches the `LLMScaler` with `GenerationChangedPredicate`, so
   its own status writes don't re-trigger reconciliation. Periodic evaluation is
   driven solely by `RequeueAfter(syncPeriod)`, which paces each scale step.
+- **Rollout guard**: while a Deployment target is mid-rollout (spec not yet
+  observed, or not all replicas on the new template), scaling is deferred. New
+  pods start with cold KV caches that both distort the metric average and would
+  be mis-picked as scale-down victims, so the controller waits for the rollout
+  to settle before acting.
 
 ### Cache-aware scale-down
 

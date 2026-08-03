@@ -93,6 +93,15 @@ var _ = Describe("LLMScaler Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, deploy)).To(Succeed())
 
+			// envtest runs no Deployment controller, so populate status to look
+			// fully rolled out; otherwise the rollout guard defers scaling.
+			deploy.Status.ObservedGeneration = deploy.Generation
+			deploy.Status.Replicas = replicas
+			deploy.Status.UpdatedReplicas = replicas
+			deploy.Status.ReadyReplicas = replicas
+			deploy.Status.AvailableReplicas = replicas
+			Expect(k8sClient.Status().Update(ctx, deploy)).To(Succeed())
+
 			By("creating the LLMScaler resource")
 			llmscaler := &autoscalingv1alpha1.LLMScaler{
 				ObjectMeta: metav1.ObjectMeta{
@@ -102,7 +111,7 @@ var _ = Describe("LLMScaler Controller", func() {
 				Spec: autoscalingv1alpha1.LLMScalerSpec{
 					TargetRef: autoscalingv1alpha1.TargetRef{
 						APIVersion: "apps/v1",
-						Kind:       "Deployment",
+						Kind:       deploymentKind,
 						Name:       targetDeployName,
 					},
 					ServerAddress: mockServer.URL,
@@ -157,6 +166,31 @@ var _ = Describe("LLMScaler Controller", func() {
 			// the mock Prometheus returns 0.85 for the query, target is 0.5,
 			// ceil(1 * 0.85/0.5) = ceil(1.7) = 2
 			Expect(*deploy.Spec.Replicas).To(Equal(int32(2)))
+		})
+
+		It("should defer scaling while the Deployment is rolling out", func() {
+			By("marking the Deployment as mid-rollout")
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: targetDeployName, Namespace: scalerNamespace}, deploy)).To(Succeed())
+			// Not all replicas are on the new template yet -> rollout in progress.
+			deploy.Status.UpdatedReplicas = 0
+			Expect(k8sClient.Status().Update(ctx, deploy)).To(Succeed())
+
+			By("running the Reconciler")
+			controllerReconciler := &LLMScalerReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("checking the Deployment was NOT scaled")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: targetDeployName, Namespace: scalerNamespace}, deploy)).To(Succeed())
+			// The metric would compute desired=2, but the rollout guard defers
+			// scaling, so replicas stay at 1.
+			Expect(*deploy.Spec.Replicas).To(Equal(int32(1)))
 		})
 	})
 })

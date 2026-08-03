@@ -52,6 +52,10 @@ const (
 	// coldPodDeletionCost is applied to pods chosen for removal so the ReplicaSet
 	// prefers them over the pods we keep (which stay at the default cost of 0).
 	coldPodDeletionCost = -100
+
+	// deploymentKind is the target kind that supports the rollout guard and
+	// pod-deletion-cost-based scale-down.
+	deploymentKind = "Deployment"
 )
 
 // LLMScalerReconciler reconciles a LLMScaler object
@@ -167,7 +171,12 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// 4. Execute Scale Action
-	if desiredReplicas != int32(specReplicas) {
+	if desiredReplicas != int32(specReplicas) && targetRef.Kind == deploymentKind && rolloutInProgress(targetObj, specReplicas) {
+		// Defer scaling while a rollout is in progress: new pods start with cold
+		// KV caches that both distort the metric average and would be mis-picked
+		// as scale-down victims. Wait for the rollout to settle, then re-evaluate.
+		logger.Info("Deferring scaling; Deployment rollout in progress", "current", specReplicas, "desired", desiredReplicas)
+	} else if desiredReplicas != int32(specReplicas) {
 		logger.Info("Scaling target", "from", specReplicas, "to", desiredReplicas)
 
 		if desiredReplicas < int32(specReplicas) {
@@ -181,7 +190,7 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			// ReplicaSet targets — StatefulSet/LWS scale-down is ordinal-based
 			// and ignores pod-deletion-cost.
 			behavior := scaler.Spec.ScaleDown.Behavior
-			if (behavior == "" || behavior == "CacheAware") && targetRef.Kind == "Deployment" {
+			if (behavior == "" || behavior == "CacheAware") && targetRef.Kind == deploymentKind {
 				numToRemove := int(specReplicas) - int(desiredReplicas)
 				if err := r.markColdestPodsForDeletion(ctx, &scaler, targetObj, numToRemove); err != nil {
 					// Non-fatal: proceed with the scale-down even if hinting failed.
@@ -224,6 +233,26 @@ func (r *LLMScalerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&autoscalingv1alpha1.LLMScaler{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("llmscaler").
 		Complete(r)
+}
+
+// rolloutInProgress reports whether a Deployment target is mid-rollout: the
+// controller hasn't observed the latest spec, not every replica is on the new
+// pod template, or old-template pods still exist. During a rollout the metric
+// average and cache-warmth ranking are unreliable, so scaling is deferred.
+// A pure replica change (scaling) is not a template rollout, so this stays false
+// for it once the new pods are created.
+func rolloutInProgress(targetObj *unstructured.Unstructured, specReplicas int64) bool {
+	gen, _, _ := unstructured.NestedInt64(targetObj.Object, "metadata", "generation")
+	observedGen, _, _ := unstructured.NestedInt64(targetObj.Object, "status", "observedGeneration")
+	if observedGen < gen {
+		return true // latest spec not yet acted on
+	}
+
+	updated, _, _ := unstructured.NestedInt64(targetObj.Object, "status", "updatedReplicas")
+	total, _, _ := unstructured.NestedInt64(targetObj.Object, "status", "replicas")
+	// In progress until every replica is on the new template and no older
+	// template pods remain.
+	return updated < specReplicas || total > updated
 }
 
 // markColdestPodsForDeletion biases the ReplicaSet toward removing the
