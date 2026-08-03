@@ -55,6 +55,10 @@ scaler:
   # Keep empty when metricsMock is enabled (the mock has no per-pod "pod" label).
   scaleDown:
     behavior: CacheAware
+    # Hold at the highest recommendation over this window before scaling down, so
+    # a brief metric dip doesn't cause flapping (scale-up stays immediate).
+    # 0 disables it (keeps the metricsMock demo snappy); set e.g. 300 in prod.
+    stabilizationWindowSeconds: 0
     deletionCostQuery: ""
     # Example (scoped to this deployment via __SCOPE__):
     #   deletionCostQuery: 'vllm:kv_cache_usage_perc{__SCOPE__} * 100'

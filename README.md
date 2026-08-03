@@ -45,6 +45,9 @@ desired = clamp(desired, minReplicas, maxReplicas)
   pods start with cold KV caches that both distort the metric average and would
   be mis-picked as scale-down victims, so the controller waits for the rollout
   to settle before acting.
+- **Scale-down stabilization** (`spec.scaleDown.stabilizationWindowSeconds`,
+  0 = off): replicas are held at the highest recommendation seen within the
+  window, so a brief metric dip doesn't shrink the fleet. Scale-up is immediate.
 
 ### Cache-aware scale-down
 

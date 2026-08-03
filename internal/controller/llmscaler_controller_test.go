@@ -18,8 +18,11 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -48,20 +51,16 @@ var _ = Describe("LLMScaler Controller", func() {
 		}
 
 		var mockServer *httptest.Server
+		// mockValue is the metric value the fake Prometheus returns; tests set it
+		// before reconciling.
+		var mockValue string
 
 		BeforeEach(func() {
+			mockValue = "0.85"
 			mockServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte(`{
-					"status": "success",
-					"data": {
-						"result": [
-							{
-								"value": [ 1234567890, "0.85" ]
-							}
-						]
-					}
-				}`))
+				_, _ = w.Write(fmt.Appendf(nil,
+					`{"status":"success","data":{"result":[{"value":[0,"%s"]}]}}`, mockValue))
 			}))
 
 			By("creating a dummy Deployment to act as the target")
@@ -192,5 +191,63 @@ var _ = Describe("LLMScaler Controller", func() {
 			// scaling, so replicas stay at 1.
 			Expect(*deploy.Spec.Replicas).To(Equal(int32(1)))
 		})
+
+		It("should scale down to minReplicas when the metric is zero", func() {
+			By("setting the Deployment to 5 replicas and the metric to 0 (idle)")
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: targetDeployName, Namespace: scalerNamespace}, deploy)).To(Succeed())
+			var five int32 = 5
+			deploy.Spec.Replicas = &five
+			Expect(k8sClient.Update(ctx, deploy)).To(Succeed())
+			// Fully rolled out at 5 so the rollout guard doesn't defer.
+			deploy.Status.ObservedGeneration = deploy.Generation
+			deploy.Status.Replicas = five
+			deploy.Status.UpdatedReplicas = five
+			deploy.Status.ReadyReplicas = five
+			deploy.Status.AvailableReplicas = five
+			Expect(k8sClient.Status().Update(ctx, deploy)).To(Succeed())
+
+			mockValue = "0" // empty queue
+
+			By("running the Reconciler")
+			controllerReconciler := &LLMScalerReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("checking it scaled down to minReplicas")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: targetDeployName, Namespace: scalerNamespace}, deploy)).To(Succeed())
+			// desired = ceil(5 * 0/5) = 0, clamped up to minReplicas (1).
+			Expect(*deploy.Spec.Replicas).To(Equal(int32(1)))
+		})
 	})
 })
+
+// TestStabilizeDesired unit-tests the scale-down stabilization helper directly
+// (deterministic, no envtest needed).
+func TestStabilizeDesired(t *testing.T) {
+	r := &LLMScalerReconciler{}
+	key := types.NamespacedName{Namespace: "ns", Name: "s"}
+	t0 := time.Now()
+	window := 60 * time.Second
+
+	if got := r.stabilizeDesired(key, 5, window, t0); got != 5 {
+		t.Fatalf("first recommendation: got %d, want 5", got)
+	}
+	// Metric dipped to 1, but the peak of 5 is still within the window -> hold.
+	if got := r.stabilizeDesired(key, 1, window, t0.Add(10*time.Second)); got != 5 {
+		t.Fatalf("within window: got %d, want 5 (held at peak)", got)
+	}
+	// After the window the peak has expired -> the low recommendation wins.
+	if got := r.stabilizeDesired(key, 1, window, t0.Add(61*time.Second)); got != 1 {
+		t.Fatalf("after window: got %d, want 1", got)
+	}
+	// Scale-up is immediate regardless of history.
+	if got := r.stabilizeDesired(key, 9, window, t0.Add(61*time.Second)); got != 9 {
+		t.Fatalf("scale-up: got %d, want 9", got)
+	}
+}

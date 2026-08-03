@@ -27,9 +27,11 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -58,10 +60,22 @@ const (
 	deploymentKind = "Deployment"
 )
 
+// scaleRecommendation is a timestamped desired-replica recommendation, retained
+// per scaler to implement the scale-down stabilization window.
+type scaleRecommendation struct {
+	time    time.Time
+	desired int32
+}
+
 // LLMScalerReconciler reconciles a LLMScaler object
 type LLMScalerReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// recMu guards recommendations, the per-scaler history of desired-replica
+	// recommendations used for scale-down stabilization.
+	recMu           sync.Mutex
+	recommendations map[types.NamespacedName][]scaleRecommendation
 }
 
 // +kubebuilder:rbac:groups=autoscaling.4pd.io,resources=llmscalers,verbs=get;list;watch;create;update;patch;delete
@@ -77,6 +91,9 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	var scaler autoscalingv1alpha1.LLMScaler
 	if err := r.Get(ctx, req.NamespacedName, &scaler); err != nil {
+		if apierrors.IsNotFound(err) {
+			r.forgetRecommendations(req.NamespacedName)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
@@ -128,37 +145,14 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	logger.Info("Fetched target resource", "kind", targetRef.Kind, "specReplicas", specReplicas, "readyReplicas", readyReplicas)
 
-	// 3. Fetch metrics and calculate desiredReplicas
-	// We'll calculate the desired replicas for each metric and take the maximum (standard HPA behavior)
-	var maxDesiredReplicas int32 = 0
+	// 3. Fetch metrics and compute the desired replica count (HPA-style, max
+	// across metrics). Use it when at least one metric was evaluated — it may
+	// legitimately be 0 for an idle target (clamped up to minReplicas below).
+	// Only when every metric failed to fetch do we hold current replicas.
+	maxDesiredReplicas, haveMetric := r.computeDesiredFromMetrics(ctx, &scaler, readyReplicas)
 
-	for _, metric := range scaler.Spec.Metrics {
-		currentValue, err := queryPrometheusScalar(scaler.Spec.ServerAddress, metric.Query, scaler.Spec.ServerHeaders)
-		if err != nil {
-			logger.Error(err, "failed to fetch metric", "name", metric.Name, "query", metric.Query)
-			continue
-		}
-
-		targetValue, err := parseTargetValue(metric.Target)
-		if err != nil {
-			logger.Error(err, "invalid target value", "target", metric.Target)
-			continue
-		}
-
-		// Algorithm: desiredReplicas = ceil[readyReplicas * (currentValue / target)]
-		ratio := currentValue / targetValue
-		metricDesired := int32(math.Ceil(float64(readyReplicas) * ratio))
-
-		logger.Info("Metric calculation", "name", metric.Name, "query", metric.Query, "current", currentValue, "target", targetValue, "calculatedDesired", metricDesired)
-
-		if metricDesired > maxDesiredReplicas {
-			maxDesiredReplicas = metricDesired
-		}
-	}
-
-	// Fallback to current replicas if no metrics were successfully calculated
 	desiredReplicas := int32(specReplicas)
-	if maxDesiredReplicas > 0 {
+	if haveMetric {
 		desiredReplicas = maxDesiredReplicas
 	}
 
@@ -168,6 +162,17 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 	if desiredReplicas > scaler.Spec.MaxReplicas {
 		desiredReplicas = scaler.Spec.MaxReplicas
+	}
+
+	// Scale-down stabilization: hold at the highest recommendation seen within
+	// the window so a brief metric dip doesn't shrink the fleet. Scale-up stays
+	// immediate, since the current recommendation is then the window's max.
+	if window := time.Duration(scaler.Spec.ScaleDown.StabilizationWindowSeconds) * time.Second; window > 0 {
+		stabilized := r.stabilizeDesired(req.NamespacedName, desiredReplicas, window, time.Now())
+		if stabilized != desiredReplicas {
+			logger.Info("Scale-down stabilized", "raw", desiredReplicas, "stabilized", stabilized, "windowSeconds", scaler.Spec.ScaleDown.StabilizationWindowSeconds)
+		}
+		desiredReplicas = stabilized
 	}
 
 	// 4. Execute Scale Action
@@ -253,6 +258,77 @@ func rolloutInProgress(targetObj *unstructured.Unstructured, specReplicas int64)
 	// In progress until every replica is on the new template and no older
 	// template pods remain.
 	return updated < specReplicas || total > updated
+}
+
+// stabilizeDesired records the latest desired-replica recommendation for a
+// scaler and returns the maximum recommendation within the stabilization window.
+// This is HPA-style scale-down stabilization: replicas are held at the recent
+// peak until the metric has stayed low for the whole window, while scale-up is
+// unaffected (the current value is then the window's max).
+func (r *LLMScalerReconciler) stabilizeDesired(key types.NamespacedName, desired int32, window time.Duration, now time.Time) int32 {
+	r.recMu.Lock()
+	defer r.recMu.Unlock()
+	if r.recommendations == nil {
+		r.recommendations = make(map[types.NamespacedName][]scaleRecommendation)
+	}
+
+	cutoff := now.Add(-window)
+	kept := make([]scaleRecommendation, 0, len(r.recommendations[key])+1)
+	for _, rec := range r.recommendations[key] {
+		if rec.time.After(cutoff) {
+			kept = append(kept, rec)
+		}
+	}
+	kept = append(kept, scaleRecommendation{time: now, desired: desired})
+	r.recommendations[key] = kept
+
+	stabilized := desired
+	for _, rec := range kept {
+		if rec.desired > stabilized {
+			stabilized = rec.desired
+		}
+	}
+	return stabilized
+}
+
+// forgetRecommendations drops the stabilization history for a deleted scaler.
+func (r *LLMScalerReconciler) forgetRecommendations(key types.NamespacedName) {
+	r.recMu.Lock()
+	defer r.recMu.Unlock()
+	delete(r.recommendations, key)
+}
+
+// computeDesiredFromMetrics evaluates each metric's PromQL query and returns the
+// maximum desired replica count (HPA-style: ceil(readyReplicas * value/target))
+// and whether any metric was successfully evaluated.
+func (r *LLMScalerReconciler) computeDesiredFromMetrics(ctx context.Context, scaler *autoscalingv1alpha1.LLMScaler, readyReplicas int64) (int32, bool) {
+	logger := logf.FromContext(ctx)
+	var maxDesired int32
+	haveMetric := false
+
+	for _, metric := range scaler.Spec.Metrics {
+		currentValue, err := queryPrometheusScalar(scaler.Spec.ServerAddress, metric.Query, scaler.Spec.ServerHeaders)
+		if err != nil {
+			logger.Error(err, "failed to fetch metric", "name", metric.Name, "query", metric.Query)
+			continue
+		}
+
+		targetValue, err := parseTargetValue(metric.Target)
+		if err != nil {
+			logger.Error(err, "invalid target value", "target", metric.Target)
+			continue
+		}
+
+		ratio := currentValue / targetValue
+		metricDesired := int32(math.Ceil(float64(readyReplicas) * ratio))
+		logger.Info("Metric calculation", "name", metric.Name, "query", metric.Query, "current", currentValue, "target", targetValue, "calculatedDesired", metricDesired)
+
+		haveMetric = true
+		if metricDesired > maxDesired {
+			maxDesired = metricDesired
+		}
+	}
+	return maxDesired, haveMetric
 }
 
 // markColdestPodsForDeletion biases the ReplicaSet toward removing the

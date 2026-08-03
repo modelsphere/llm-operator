@@ -144,8 +144,10 @@ spec:
                       When empty, a newest-pod-first heuristic is used instead.
                     type: string
                   stabilizationWindowSeconds:
-                    description: stabilizationWindowSeconds is reserved for smoothing
-                      scale-down decisions.
+                    description: |-
+                      stabilizationWindowSeconds dampens scale-down: replicas are held at the
+                      highest recommendation seen within this many seconds, so a brief metric dip
+                      doesn't shrink the fleet. Scale-up is immediate. 0 disables stabilization.
                     format: int32
                     type: integer
                 type: object

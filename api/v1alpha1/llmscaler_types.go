@@ -52,7 +52,10 @@ type MetricSpec struct {
 
 // ScaleDownSpec defines cache-aware scale down behavior
 type ScaleDownSpec struct {
-	// stabilizationWindowSeconds is reserved for smoothing scale-down decisions.
+	// stabilizationWindowSeconds dampens scale-down: replicas are held at the
+	// highest recommendation seen within this many seconds, so a brief metric dip
+	// doesn't shrink the fleet. Scale-up is immediate. 0 disables stabilization.
+	// +optional
 	StabilizationWindowSeconds int32 `json:"stabilizationWindowSeconds,omitempty"`
 
 	// behavior controls how pods are chosen when scaling down.
