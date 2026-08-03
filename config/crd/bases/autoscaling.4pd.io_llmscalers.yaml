@@ -72,6 +72,10 @@ spec:
                     targetAverageValue:
                       type: string
                     type:
+                      description: type is the vLLM metric to scale on.
+                      enum:
+                      - KVCacheUtilization
+                      - QueueDepth
                       type: string
                   required:
                   - targetAverageValue
@@ -122,8 +126,8 @@ spec:
                     description: |-
                       deletionCostQuery is an optional PromQL instant query used to compute each
                       pod's controller.kubernetes.io/pod-deletion-cost at scale-down time (only
-                      applies when behavior is CacheAware and serverType is Prometheus). It is
-                      evaluated against spec.serverAddress and must return one series per pod
+                      applies when behavior is CacheAware). It is evaluated against
+                      spec.serverAddress and must return one series per pod
                       carrying a "pod" label; the sample value becomes that pod's deletion cost.
                       Lower cost is deleted first, so the expression should yield lower numbers
                       for colder / less valuable pods (e.g. "vllm:kv_cache_usage_perc * 100").
@@ -141,22 +145,17 @@ spec:
                 description: selector is used to filter metrics for the target resource
                 type: object
               serverAddress:
-                description: serverAddress is the upstream metrics server address
-                  (e.g., http://prometheus:9090)
+                description: serverAddress is the Prometheus query endpoint (e.g.
+                  http://prometheus:9090)
                 type: string
               serverHeaders:
                 additionalProperties:
                   type: string
                 description: |-
                   serverHeaders are additional HTTP headers sent with every metric-fetch
-                  request to the metrics server (e.g. Authorization for a Custom llm-monitor
-                  server or a secured Prometheus). Values are used verbatim.
+                  request to Prometheus (e.g. Authorization for a secured endpoint). Values
+                  are used verbatim.
                 type: object
-              serverType:
-                default: Prometheus
-                description: serverType defines the type of metrics server (Prometheus
-                  or Custom)
-                type: string
               syncPeriodSeconds:
                 default: 15
                 description: syncPeriodSeconds is the interval at which the autoscaler

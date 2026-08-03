@@ -26,8 +26,7 @@ scaler:
   minReplicas: 1
   maxReplicas: 5
   syncPeriodSeconds: 10
-  # Metric source: Prometheus scrapes vLLM via the serviceMonitor below.
-  serverType: Prometheus
+  # Prometheus scrapes vLLM via the serviceMonitor below.
   # Prometheus query endpoint (the /api/v1/query base). Adjust to your cluster;
   # this is the headless Service the Prometheus Operator creates by default.
   serverAddress: "http://prometheus-operated.monitoring.svc:9090"

@@ -129,17 +129,7 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	var maxDesiredReplicas int32 = 0
 
 	for _, metric := range scaler.Spec.Metrics {
-		var currentValue float64
-		var err error
-
-		if scaler.Spec.ServerType == autoscalingv1alpha1.ServerTypeCustom {
-			// Fetch current metric value using the custom llm-monitor /api/capacity_load API
-			currentValue, err = fetchMetricFromCustom(scaler.Spec.ServerAddress, metric.Type, scaler.Spec.Selector, scaler.Spec.ServerHeaders)
-		} else {
-			// Default to Prometheus
-			currentValue, err = fetchMetricFromUpstream(scaler.Spec.ServerAddress, metric.Type, scaler.Spec.Selector, scaler.Spec.ServerHeaders)
-		}
-
+		currentValue, err := fetchMetricFromUpstream(scaler.Spec.ServerAddress, metric.Type, scaler.Spec.Selector, scaler.Spec.ServerHeaders)
 		if err != nil {
 			logger.Error(err, "failed to fetch metric", "metric", metric.Type)
 			continue
@@ -262,7 +252,7 @@ func (r *LLMScalerReconciler) markColdestPodsForDeletion(ctx context.Context, sc
 
 	// Query-based costs take precedence when configured against a Prometheus
 	// source; each matched pod's cost is set from the expression's per-pod value.
-	if q := scaler.Spec.ScaleDown.DeletionCostQuery; q != "" && scaler.Spec.ServerType != autoscalingv1alpha1.ServerTypeCustom {
+	if q := scaler.Spec.ScaleDown.DeletionCostQuery; q != "" {
 		costs, err := queryPodDeletionCosts(scaler.Spec.ServerAddress, q, scaler.Spec.ServerHeaders)
 		if err != nil {
 			return fmt.Errorf("deletion-cost query failed: %w", err)
@@ -396,73 +386,6 @@ func queryPodDeletionCosts(serverAddress, promQL string, headers map[string]stri
 		return nil, fmt.Errorf("deletion-cost query returned no per-pod samples (missing 'pod' label?)")
 	}
 	return costs, nil
-}
-
-// fetchMetricFromCustom queries the custom metrics server API (e.g. llm-monitor /api/capacity_load)
-func fetchMetricFromCustom(serverAddress string, metricType autoscalingv1alpha1.MetricType, selector, headers map[string]string) (float64, error) {
-	if serverAddress == "" {
-		return 0, fmt.Errorf("serverAddress is empty, cannot fetch custom metrics")
-	}
-
-	modelName, ok := selector["model_name"]
-	if !ok || modelName == "" {
-		return 0, fmt.Errorf("selector must contain 'model_name' for custom metric fetching")
-	}
-
-	httpClient := &http.Client{Timeout: 5 * time.Second}
-
-	var endpoint string
-	switch metricType {
-	case autoscalingv1alpha1.MetricTypeTPMLoad:
-		endpoint = "/api/tpm_load"
-	case autoscalingv1alpha1.MetricTypeCapacityLoad:
-		endpoint = "/api/capacity_load"
-	default:
-		return 0, fmt.Errorf("unsupported custom metric type: %s", metricType)
-	}
-
-	// Hit the correct endpoint based on metric type
-	queryURL := fmt.Sprintf("%s%s?limit=1&model=%s", strings.TrimRight(serverAddress, "/"), endpoint, url.QueryEscape(modelName))
-
-	req, err := http.NewRequest("GET", queryURL, nil)
-	if err != nil {
-		return 0, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Default headers; any entry in the CRD's serverHeaders overrides these.
-	req.Header.Set("Accept", "*/*")
-	applyHeaders(req, headers)
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("failed to fetch from custom metrics server: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return 0, fmt.Errorf("invalid response from custom metrics server: %d %s", resp.StatusCode, string(bodyBytes))
-	}
-
-	var respData struct {
-		Samples []struct {
-			UtilPct float64 `json:"util_pct"`
-		} `json:"samples"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&respData); err != nil {
-		return 0, fmt.Errorf("failed to decode JSON from custom metrics server: %w", err)
-	}
-
-	if len(respData.Samples) == 0 {
-		return 0, fmt.Errorf("no samples returned from custom metrics server for model %s", modelName)
-	}
-
-	// The API returns samples in ascending order, so we take the last one
-	latestSample := respData.Samples[len(respData.Samples)-1]
-
-	// Assume util_pct corresponds to the utilization we want to scale on
-	return latestSample.UtilPct, nil
 }
 
 // applyHeaders sets the given headers on the request, overriding any existing values.

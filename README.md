@@ -12,14 +12,12 @@ source.
 
 - **Target** (`spec.targetRef`): any `Deployment`, `StatefulSet`, or
   `LeaderWorkerSet` (handled generically via the unstructured client).
-- **Metric source** (`spec.serverType`):
-  - `Prometheus` — instant PromQL queries. `KVCacheUtilization` →
-    `vllm:kv_cache_usage_perc` (with a `vllm:gpu_cache_usage_perc` fallback for
-    the pre-V1 engine); `QueueDepth` → `vllm:num_requests_waiting`.
-  - `Custom` — an llm-monitor HTTP API (`/api/tpm_load`, `/api/capacity_load`)
-    for `TPMLoad` / `CapacityLoad`.
+- **Metric source**: Prometheus, via instant PromQL queries against
+  `spec.serverAddress`. `KVCacheUtilization` → `vllm:kv_cache_usage_perc` (with a
+  `vllm:gpu_cache_usage_perc` fallback for the pre-V1 engine); `QueueDepth` →
+  `vllm:num_requests_waiting`.
 - **Headers** (`spec.serverHeaders`): arbitrary headers sent with every
-  metric-fetch request (e.g. `Authorization` for a secured endpoint).
+  metric-fetch request (e.g. `Authorization` for a secured Prometheus).
 
 ### Scaling algorithm
 
@@ -63,8 +61,7 @@ Coldest-pod ranking has two modes:
   query that returns one series per pod (carrying a `pod` label). At scale-down
   time the controller evaluates it against `spec.serverAddress` and writes each
   pod's `pod-deletion-cost` from the sample value (lower = deleted first). E.g.
-  `vllm:kv_cache_usage_perc{namespace="default"} * 100` keeps warmer pods. Only
-  applies when `serverType: Prometheus`.
+  `vllm:kv_cache_usage_perc{namespace="default"} * 100` keeps warmer pods.
 - **Heuristic fallback** — when no query is set, newest pod = coldest cache, and
   only the sacrificed pods are marked.
 

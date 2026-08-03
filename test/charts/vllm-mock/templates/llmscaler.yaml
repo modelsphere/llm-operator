@@ -9,7 +9,6 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: {{ .Release.Name }}-vllm
-  serverType: {{ .Values.scaler.serverType }}
   {{- if .Values.metricsMock.enabled }}
   # Driven by the metrics-mock (returns a fixed value) to simulate scaling.
   serverAddress: "http://{{ .Release.Name }}-metrics-mock.{{ .Release.Namespace }}:9090"

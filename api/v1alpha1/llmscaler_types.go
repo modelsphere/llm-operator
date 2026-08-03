@@ -36,19 +36,12 @@ type MetricType string
 const (
 	MetricTypeKVCacheUtilization MetricType = "KVCacheUtilization"
 	MetricTypeQueueDepth         MetricType = "QueueDepth"
-	MetricTypeCapacityLoad       MetricType = "CapacityLoad"
-	MetricTypeTPMLoad            MetricType = "TPMLoad"
-)
-
-type ServerType string
-
-const (
-	ServerTypePrometheus ServerType = "Prometheus"
-	ServerTypeCustom     ServerType = "Custom"
 )
 
 // MetricSpec defines the metric to monitor for scaling decisions
 type MetricSpec struct {
+	// type is the vLLM metric to scale on.
+	// +kubebuilder:validation:Enum=KVCacheUtilization;QueueDepth
 	Type               MetricType `json:"type"`
 	TargetAverageValue string     `json:"targetAverageValue"`
 }
@@ -71,8 +64,8 @@ type ScaleDownSpec struct {
 
 	// deletionCostQuery is an optional PromQL instant query used to compute each
 	// pod's controller.kubernetes.io/pod-deletion-cost at scale-down time (only
-	// applies when behavior is CacheAware and serverType is Prometheus). It is
-	// evaluated against spec.serverAddress and must return one series per pod
+	// applies when behavior is CacheAware). It is evaluated against
+	// spec.serverAddress and must return one series per pod
 	// carrying a "pod" label; the sample value becomes that pod's deletion cost.
 	// Lower cost is deleted first, so the expression should yield lower numbers
 	// for colder / less valuable pods (e.g. "vllm:kv_cache_usage_perc * 100").
@@ -92,21 +85,16 @@ type LLMScalerSpec struct {
 	// targetRef points to the resource (e.g., Deployment) to scale
 	TargetRef TargetRef `json:"targetRef"`
 
-	// serverAddress is the upstream metrics server address (e.g., http://prometheus:9090)
+	// serverAddress is the Prometheus query endpoint (e.g. http://prometheus:9090)
 	ServerAddress string `json:"serverAddress"`
-
-	// serverType defines the type of metrics server (Prometheus or Custom)
-	// +kubebuilder:default="Prometheus"
-	// +optional
-	ServerType ServerType `json:"serverType,omitempty"`
 
 	// selector is used to filter metrics for the target resource
 	// +optional
 	Selector map[string]string `json:"selector,omitempty"`
 
 	// serverHeaders are additional HTTP headers sent with every metric-fetch
-	// request to the metrics server (e.g. Authorization for a Custom llm-monitor
-	// server or a secured Prometheus). Values are used verbatim.
+	// request to Prometheus (e.g. Authorization for a secured endpoint). Values
+	// are used verbatim.
 	// +optional
 	ServerHeaders map[string]string `json:"serverHeaders,omitempty"`
 

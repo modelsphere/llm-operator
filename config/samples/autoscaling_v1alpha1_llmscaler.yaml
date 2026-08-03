@@ -10,17 +10,17 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: vllm-opt-125m
-  serverType: Custom
-  serverAddress: "http://101.42.28.156/monitor"
+  serverAddress: "http://prometheus-operated.monitoring.svc:9090"
   selector:
-    model_name: "opt-125m"
+    model_name: "facebook/opt-125m"
   minReplicas: 1
   maxReplicas: 5
   syncPeriodSeconds: 15
   retryPeriodSeconds: 10
   metrics:
-    - type: TPMLoad
-      targetAverageValue: "80"
+    - type: KVCacheUtilization
+      targetAverageValue: "80%"
   scaleDown:
     stabilizationWindowSeconds: 300
     behavior: CacheAware
+    deletionCostQuery: 'vllm:kv_cache_usage_perc{namespace="default"} * 100'
