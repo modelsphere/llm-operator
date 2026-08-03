@@ -23,4 +23,4 @@ spec:
       targetAverageValue: "80"
   scaleDown:
     stabilizationWindowSeconds: 300
-    behavior: TargetedDeletion
+    behavior: CacheAware

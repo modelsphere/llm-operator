@@ -24,10 +24,12 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -39,6 +41,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	autoscalingv1alpha1 "gitlab.4pd.io/inference-production-stack/llm-operator/api/v1alpha1"
+)
+
+const (
+	// podDeletionCostAnnotation biases ReplicaSet scale-down: pods with a lower
+	// cost are removed first. Best-effort, not guaranteed. See
+	// https://kubernetes.io/docs/concepts/workloads/controllers/replicaset/#pod-deletion-cost
+	podDeletionCostAnnotation = "controller.kubernetes.io/pod-deletion-cost"
+
+	// coldPodDeletionCost is applied to pods chosen for removal so the ReplicaSet
+	// prefers them over the pods we keep (which stay at the default cost of 0).
+	coldPodDeletionCost = -100
 )
 
 // LLMScalerReconciler reconciles a LLMScaler object
@@ -53,7 +66,7 @@ type LLMScalerReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=leaderworkerset.x-k8s.io,resources=leaderworkersets,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;patch
 
 func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := logf.FromContext(ctx)
@@ -169,13 +182,25 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		logger.Info("Scaling target", "from", specReplicas, "to", desiredReplicas)
 
 		if desiredReplicas < int32(specReplicas) {
-			// TODO: Cache-Aware Scale-Down
-			// 1. Query Cache-Aware Router API
-			// 2. Transition specific pod to Draining state
-			// Note: When scaling down Deployments/StatefulSets, deleting a specific pod
-			// requires controller logic to manage pod deletion cost annotations (for RS/Deployments)
-			// or using specific controller mechanisms.
-			logger.Info("Initiating Cache-Aware Scale-Down...")
+			// Cache-Aware Scale-Down: bias the ReplicaSet toward removing the
+			// coldest-cache pods by setting a low pod-deletion-cost on exactly
+			// the pods being sacrificed. This runs ONLY here (at shrink time),
+			// never per-metric, to respect the pod-deletion-cost guidance that
+			// frequent metric-driven updates overload the apiserver. It is
+			// best-effort; the preStop drain keeps scale-down safe regardless of
+			// which pod is ultimately removed. Only applies to Deployment/
+			// ReplicaSet targets — StatefulSet/LWS scale-down is ordinal-based
+			// and ignores pod-deletion-cost.
+			behavior := scaler.Spec.ScaleDown.Behavior
+			if (behavior == "" || behavior == "CacheAware") && targetRef.Kind == "Deployment" {
+				numToRemove := int(specReplicas) - int(desiredReplicas)
+				if err := r.markColdestPodsForDeletion(ctx, &scaler, targetObj, numToRemove); err != nil {
+					// Non-fatal: proceed with the scale-down even if hinting failed.
+					logger.Error(err, "Could not set pod-deletion-cost hints; scaling down without them")
+				}
+			} else {
+				logger.Info("Skipping targeted deletion", "behavior", behavior, "kind", targetRef.Kind)
+			}
 		}
 
 		err = unstructured.SetNestedField(targetObj.Object, int64(desiredReplicas), "spec", "replicas")
@@ -210,6 +235,167 @@ func (r *LLMScalerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&autoscalingv1alpha1.LLMScaler{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("llmscaler").
 		Complete(r)
+}
+
+// markColdestPodsForDeletion biases the ReplicaSet toward removing the
+// coldest / least-valuable pods on scale-down. If scaleDown.deletionCostQuery is
+// set (and the source is Prometheus), each pod's pod-deletion-cost is computed
+// from that PromQL expression; otherwise a newest-pod-first heuristic marks just
+// the numToRemove sacrificed pods. Runs only at scale-down time (not per-metric)
+// to respect the apiserver-load guidance for this annotation. Patching a live
+// Pod's annotation is an in-place metadata write and does not restart it.
+func (r *LLMScalerReconciler) markColdestPodsForDeletion(ctx context.Context, scaler *autoscalingv1alpha1.LLMScaler, targetObj *unstructured.Unstructured, numToRemove int) error {
+	if numToRemove <= 0 {
+		return nil
+	}
+
+	// Locate the target's pods via its label selector.
+	sel, found, err := unstructured.NestedStringMap(targetObj.Object, "spec", "selector", "matchLabels")
+	if err != nil || !found || len(sel) == 0 {
+		return fmt.Errorf("target has no spec.selector.matchLabels to locate pods")
+	}
+
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods, client.InNamespace(scaler.Namespace), client.MatchingLabels(sel)); err != nil {
+		return fmt.Errorf("failed to list target pods: %w", err)
+	}
+
+	// Query-based costs take precedence when configured against a Prometheus
+	// source; each matched pod's cost is set from the expression's per-pod value.
+	if q := scaler.Spec.ScaleDown.DeletionCostQuery; q != "" && scaler.Spec.ServerType != autoscalingv1alpha1.ServerTypeCustom {
+		costs, err := queryPodDeletionCosts(scaler.Spec.ServerAddress, q, scaler.Spec.ServerHeaders)
+		if err != nil {
+			return fmt.Errorf("deletion-cost query failed: %w", err)
+		}
+		return r.applyPodDeletionCosts(ctx, pods.Items, costs)
+	}
+
+	// Heuristic fallback: newer pods have colder KV caches, so order by
+	// creationTimestamp descending and mark just the sacrificed pods.
+	slices.SortFunc(pods.Items, func(a, b corev1.Pod) int {
+		return b.CreationTimestamp.Compare(a.CreationTimestamp.Time)
+	})
+
+	logger := logf.FromContext(ctx)
+	numToRemove = min(numToRemove, len(pods.Items))
+	for i := range numToRemove {
+		pod := &pods.Items[i]
+		if err := r.patchPodDeletionCost(ctx, pod, coldPodDeletionCost); err != nil {
+			return err
+		}
+		logger.Info("Marked pod for cache-aware scale-down", "pod", pod.Name, "podDeletionCost", coldPodDeletionCost)
+	}
+	return nil
+}
+
+// applyPodDeletionCosts writes the per-pod costs (keyed by pod name) onto the
+// matching pods. Pods with no entry in the map are left untouched.
+func (r *LLMScalerReconciler) applyPodDeletionCosts(ctx context.Context, pods []corev1.Pod, costs map[string]float64) error {
+	logger := logf.FromContext(ctx)
+	for i := range pods {
+		pod := &pods[i]
+		v, ok := costs[pod.Name]
+		if !ok {
+			continue // no metric for this pod; leave its cost unchanged
+		}
+		cost := clampToInt32(math.Round(v))
+		if err := r.patchPodDeletionCost(ctx, pod, cost); err != nil {
+			return err
+		}
+		logger.Info("Set pod-deletion-cost from query", "pod", pod.Name, "podDeletionCost", cost)
+	}
+	return nil
+}
+
+// patchPodDeletionCost sets the pod-deletion-cost annotation on a single pod via
+// an in-place merge patch (does not restart the pod).
+func (r *LLMScalerReconciler) patchPodDeletionCost(ctx context.Context, pod *corev1.Pod, cost int32) error {
+	base := client.MergeFrom(pod.DeepCopy())
+	if pod.Annotations == nil {
+		pod.Annotations = map[string]string{}
+	}
+	pod.Annotations[podDeletionCostAnnotation] = strconv.Itoa(int(cost))
+	if err := r.Patch(ctx, pod, base); err != nil {
+		return fmt.Errorf("failed to set pod-deletion-cost on pod %s: %w", pod.Name, err)
+	}
+	return nil
+}
+
+// clampToInt32 clamps a float to the int32 range accepted by the annotation.
+func clampToInt32(f float64) int32 {
+	switch {
+	case f > math.MaxInt32:
+		return math.MaxInt32
+	case f < math.MinInt32:
+		return math.MinInt32
+	default:
+		return int32(f)
+	}
+}
+
+// queryPodDeletionCosts runs a PromQL instant query that returns per-pod values
+// and maps them by the "pod" label, for deriving pod-deletion-cost from a
+// user-defined expression at scale-down time.
+func queryPodDeletionCosts(serverAddress, promQL string, headers map[string]string) (map[string]float64, error) {
+	if serverAddress == "" {
+		return nil, fmt.Errorf("serverAddress is empty")
+	}
+
+	queryURL := fmt.Sprintf("%s/api/v1/query?query=%s", strings.TrimRight(serverAddress, "/"), url.QueryEscape(promQL))
+	req, err := http.NewRequest("GET", queryURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	applyHeaders(req, headers)
+
+	httpClient := http.Client{Timeout: 5 * time.Second}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query prometheus: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("prometheus returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var promResp struct {
+		Status string `json:"status"`
+		Data   struct {
+			Result []struct {
+				Metric map[string]string `json:"metric"`
+				Value  []any             `json:"value"`
+			} `json:"result"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&promResp); err != nil {
+		return nil, fmt.Errorf("failed to decode prometheus response: %w", err)
+	}
+	if promResp.Status != "success" {
+		return nil, fmt.Errorf("prometheus query failed with status: %s", promResp.Status)
+	}
+
+	costs := make(map[string]float64, len(promResp.Data.Result))
+	for _, res := range promResp.Data.Result {
+		pod := res.Metric["pod"]
+		if pod == "" || len(res.Value) != 2 {
+			continue
+		}
+		valStr, ok := res.Value[1].(string)
+		if !ok {
+			continue
+		}
+		v, err := strconv.ParseFloat(valStr, 64)
+		if err != nil {
+			continue
+		}
+		costs[pod] = v
+	}
+	if len(costs) == 0 {
+		return nil, fmt.Errorf("deletion-cost query returned no per-pod samples (missing 'pod' label?)")
+	}
+	return costs, nil
 }
 
 // fetchMetricFromCustom queries the custom metrics server API (e.g. llm-monitor /api/capacity_load)
@@ -251,7 +437,7 @@ func fetchMetricFromCustom(serverAddress string, metricType autoscalingv1alpha1.
 	if err != nil {
 		return 0, fmt.Errorf("failed to fetch from custom metrics server: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
@@ -347,7 +533,7 @@ func fetchMetricFromUpstream(serverAddress string, metricType autoscalingv1alpha
 	if err != nil {
 		return 0, fmt.Errorf("failed to query prometheus: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)

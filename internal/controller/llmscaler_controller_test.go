@@ -52,7 +52,7 @@ var _ = Describe("LLMScaler Controller", func() {
 		BeforeEach(func() {
 			mockServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte(`{
+				_, _ = w.Write([]byte(`{
 					"status": "success",
 					"data": {
 						"result": [

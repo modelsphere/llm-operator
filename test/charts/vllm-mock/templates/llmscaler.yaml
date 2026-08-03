@@ -28,4 +28,8 @@ spec:
   maxReplicas: {{ .Values.scaler.maxReplicas }}
   metrics:
     {{- toYaml .Values.scaler.metrics | nindent 4 }}
+  {{- with .Values.scaler.scaleDown }}
+  scaleDown:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 {{- end -}}

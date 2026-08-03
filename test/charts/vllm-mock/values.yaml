@@ -41,6 +41,17 @@ scaler:
   metrics:
     - type: KVCacheUtilization
       targetAverageValue: "80%"
+  # Cache-aware scale-down. deletionCostQuery is a PromQL instant query that
+  # returns one series per pod (carrying a "pod" label); its value becomes that
+  # pod's controller.kubernetes.io/pod-deletion-cost (lower = deleted first), so
+  # colder pods should yield lower numbers. Evaluated against serverAddress at
+  # scale-down time. Leave empty to use the built-in newest-pod-first heuristic.
+  # Keep empty when metricsMock is enabled (the mock has no per-pod "pod" label).
+  scaleDown:
+    behavior: CacheAware
+    deletionCostQuery: ""
+    # Example (kube-prometheus-stack scraping vLLM with a "pod" label):
+    #   deletionCostQuery: 'vllm:kv_cache_usage_perc{namespace="default"} * 100'
 
 # Deterministic scale-op simulation. When enabled, the scaler queries this mock
 # instead of real Prometheus, so you can drive scaling by hand: set `value`

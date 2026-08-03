@@ -55,9 +55,30 @@ type MetricSpec struct {
 
 // ScaleDownSpec defines cache-aware scale down behavior
 type ScaleDownSpec struct {
+	// stabilizationWindowSeconds is reserved for smoothing scale-down decisions.
 	StabilizationWindowSeconds int32 `json:"stabilizationWindowSeconds,omitempty"`
-	// +kubebuilder:default="TargetedDeletion"
+
+	// behavior controls how pods are chosen when scaling down.
+	// "CacheAware" (default) biases removal toward the coldest-cache pods by
+	// setting a low controller.kubernetes.io/pod-deletion-cost on the pods being
+	// removed, so the ReplicaSet deletes them first. This is best-effort and only
+	// applies to Deployment/ReplicaSet targets — StatefulSet/LWS scale-down is
+	// ordinal-based and ignores the hint. "None" opts out and uses the workload
+	// controller's default deletion order.
+	// +kubebuilder:validation:Enum=CacheAware;None
+	// +kubebuilder:default="CacheAware"
 	Behavior string `json:"behavior,omitempty"`
+
+	// deletionCostQuery is an optional PromQL instant query used to compute each
+	// pod's controller.kubernetes.io/pod-deletion-cost at scale-down time (only
+	// applies when behavior is CacheAware and serverType is Prometheus). It is
+	// evaluated against spec.serverAddress and must return one series per pod
+	// carrying a "pod" label; the sample value becomes that pod's deletion cost.
+	// Lower cost is deleted first, so the expression should yield lower numbers
+	// for colder / less valuable pods (e.g. "vllm:kv_cache_usage_perc * 100").
+	// When empty, a newest-pod-first heuristic is used instead.
+	// +optional
+	DeletionCostQuery string `json:"deletionCostQuery,omitempty"`
 }
 
 // PreemptionSpec defines preemption capabilities
