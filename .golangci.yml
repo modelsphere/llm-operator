@@ -1,6 +1,9 @@
 version: "2"
 run:
   allow-parallel-runners: true
+  # Without this the //go:build e2e files under test/e2e are invisible to lint.
+  build-tags:
+    - e2e
 linters:
   default: none
   enable:

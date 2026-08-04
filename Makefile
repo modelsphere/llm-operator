@@ -95,13 +95,21 @@ test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expect
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
 
+# Paths to lint/format. Override to scope to a subset, e.g. from the git hook:
+#   make lint-format LINT_PATHS="internal/controller/foo.go api/v1alpha1/bar.go"
+LINT_PATHS ?= ./...
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
-	"$(GOLANGCI_LINT)" run
+	"$(GOLANGCI_LINT)" run $(LINT_PATHS)
 
 .PHONY: lint-fix
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
-	"$(GOLANGCI_LINT)" run --fix
+	"$(GOLANGCI_LINT)" run --fix $(LINT_PATHS)
+
+.PHONY: lint-format
+lint-format: golangci-lint ## Apply gofmt + goimports via golangci-lint formatters
+	"$(GOLANGCI_LINT)" fmt $(LINT_PATHS)
 
 .PHONY: lint-config
 lint-config: golangci-lint ## Verify golangci-lint linter configuration

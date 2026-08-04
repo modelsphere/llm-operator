@@ -18,10 +18,12 @@ spec:
   metrics:
     # Scope the query to THIS deployment's pods (not just the model) so multiple
     # deployments serving the same model don't get averaged together.
+    # The short avg_over_time window smooths scrape noise while keeping scale-up responsive.
     - name: kv-cache
-      query: 'avg(vllm:kv_cache_usage_perc{namespace="default", app="vllm-opt-125m"})'
+      query: 'avg(avg_over_time(vllm:kv_cache_usage_perc{namespace="default", app="vllm-opt-125m"}[2m]))'
       target: "0.8"
   scaleDown:
-    stabilizationWindowSeconds: 300
+    # Conservative scale-down (fast scale-up stays immediate). Raise for less churn, lower for snappier scale-in.
+    stabilizationWindowSeconds: 180
     behavior: CacheAware
     deletionCostQuery: 'vllm:kv_cache_usage_perc{namespace="default", app="vllm-opt-125m"} * 100'

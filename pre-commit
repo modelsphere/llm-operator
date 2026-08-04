@@ -80,25 +80,18 @@ for file in "${STAGED_FILES[@]}"; do
 done
 
 if [ "${#GO_FILES[@]}" -gt 0 ]; then
-    echo "Running gofmt..."
-    gofmt -w "${GO_FILES[@]}"
+    # Format only the staged files, so an unstaged file sharing a package with a
+    # staged one is never rewritten behind the author's back.
+    echo "Formatting staged Go files (gofmt + goimports)..."
+    make -s lint-format LINT_PATHS="${GO_FILES[*]}"
 
-    echo "Running go vet..."
-    GO_DIRS=()
-    for file in "${GO_FILES[@]}"; do
-        dir=$(dirname "$file")
-        # Add to GO_DIRS if not already present
-        if [[ ! " ${GO_DIRS[*]} " == *" ${dir} "* ]]; then
-            GO_DIRS+=("$dir")
-        fi
-    done
-
-    for dir in "${GO_DIRS[@]}"; do
-        if ! go vet "./$dir"; then
-            echo "❌ go vet failed in ./$dir. Please fix the errors before committing."
-            exit 1
-        fi
-    done
+    # Check the whole module: editing one package can break a dependent one.
+    # A warm run is a couple of seconds, so scoping this buys nothing.
+    echo "Running golangci-lint..."
+    if ! make -s lint; then
+        echo "❌ make lint failed. Try 'make lint-fix', then re-stage."
+        exit 1
+    fi
 else
     echo "No Go files changed. Skipping Go checks."
 fi

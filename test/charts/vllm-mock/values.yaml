@@ -33,19 +33,22 @@ scaler:
   # Optional HTTP headers for the metrics query (e.g. auth for a secured
   # Prometheus). Empty for a typical in-cluster Prometheus.
   serverHeaders: {}
-  # Each metric is a PromQL instant query (returning a single averaged value)
-  # plus a per-replica target. Scaling compares them as
+  # Each metric is a PromQL query (returning a single averaged value) plus a
+  # per-replica target. Scaling compares them as
   # ceil(readyReplicas * value / target). Bake label filters into the query.
   # The __SCOPE__ token expands to namespace="<ns>", app="<release>-vllm", scoping
   # the query to THIS deployment's pods — important when several deployments (even
   # same-named releases in different namespaces) serve the same model.
+  # A short avg_over_time window keeps the signal robust to a missed scrape and
+  # filters single-sample spikes; keep it short (~1m) so scale-up stays fast —
+  # scale-down conservatism belongs in scaleDown.stabilizationWindowSeconds.
   metrics:
     # Queue depth (requests waiting per replica). This is the signal that
     # actually moves under real load on a small model — its KV cache barely
     # fills, but requests queue once concurrency exceeds vLLM's max-num-seqs.
     # Scale up when the average waiting requests per replica exceeds target.
     - name: queue-depth
-      query: 'avg(vllm:num_requests_waiting{__SCOPE__})'
+      query: 'avg(avg_over_time(vllm:num_requests_waiting{__SCOPE__}[1m]))'
       target: "5"
   # Cache-aware scale-down. deletionCostQuery is a PromQL instant query that
   # returns one series per pod (carrying a "pod" label); its value becomes that

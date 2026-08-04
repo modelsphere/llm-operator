@@ -1,5 +1,4 @@
 //go:build e2e
-// +build e2e
 
 /*
 Copyright 2026.
@@ -216,6 +215,12 @@ var _ = Describe("Manager", Ordered, func() {
 			// +kubebuilder:scaffold:e2e-metrics-webhooks-readiness
 
 			By("creating the curl-metrics pod to access the metrics endpoint")
+			curlArgs := fmt.Sprintf(
+				"for i in $(seq 1 30); do "+
+					"curl -v -k -H 'Authorization: Bearer %s' "+
+					"https://%s.%s.svc.cluster.local:8443/metrics "+
+					"&& exit 0 || sleep 2; done; exit 1",
+				token, metricsServiceName, namespace)
 			cmd = exec.Command("kubectl", "run", "curl-metrics", "--restart=Never",
 				"--namespace", namespace,
 				"--image=curlimages/curl:latest",
@@ -227,7 +232,7 @@ var _ = Describe("Manager", Ordered, func() {
 							"image": "curlimages/curl:latest",
 							"command": ["/bin/sh", "-c"],
 							"args": [
-								"for i in $(seq 1 30); do curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8443/metrics && exit 0 || sleep 2; done; exit 1"
+								"%s"
 							],
 							"securityContext": {
 								"readOnlyRootFilesystem": true,
@@ -244,7 +249,7 @@ var _ = Describe("Manager", Ordered, func() {
 						}],
 						"serviceAccountName": "%s"
 					}
-				}`, token, metricsServiceName, namespace, serviceAccountName))
+				}`, curlArgs, serviceAccountName))
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create curl-metrics pod")
 
@@ -272,7 +277,57 @@ var _ = Describe("Manager", Ordered, func() {
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 
 		It("should dynamically scale up a mock deployment", func() {
-			By("creating a dummy Deployment")
+			By("deploying a mock Prometheus that returns a fixed metric value")
+			// http-echo returns the same body for any path (including
+			// /api/v1/query), mimicking a Prometheus instant-query response. This
+			// drives the LLMScaler deterministically without a real Prometheus or
+			// vLLM. Mirrors test/charts/vllm-mock/templates/metrics-mock.yaml. The
+			// fixed value 100 (well above the target below) makes the
+			// recommendation ceil(readyReplicas * 100/5) exceed maxReplicas on
+			// every evaluation, so the fleet pegs to maxReplicas.
+			metricsMockYAML := `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-prometheus
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mock-prometheus
+  template:
+    metadata:
+      labels:
+        app: mock-prometheus
+    spec:
+      containers:
+      - name: http-echo
+        image: hashicorp/http-echo:0.2.3
+        args:
+          - "-listen=:5678"
+          - '-text={"status":"success","data":{"result":[{"value":[0,"100"]}]}}'
+        ports:
+        - containerPort: 5678
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-prometheus
+  namespace: default
+spec:
+  selector:
+    app: mock-prometheus
+  ports:
+  - port: 9090
+    targetPort: 5678
+`
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(metricsMockYAML)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create mock Prometheus")
+
+			By("creating a dummy Deployment as the scale target")
 			deployYAML := `
 apiVersion: apps/v1
 kind: Deployment
@@ -293,9 +348,9 @@ spec:
       - name: nginx
         image: nginx:latest
 `
-			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(deployYAML)
-			_, err := utils.Run(cmd)
+			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create dummy Deployment")
 
 			By("creating an LLMScaler targeting the Deployment")
@@ -314,30 +369,39 @@ spec:
     name: mock-llm-deployment
   minReplicas: 1
   maxReplicas: 5
-  serverAddress: "http://mock-prometheus"
+  serverAddress: "http://mock-prometheus.default:9090"
   metrics:
-    - type: KVCacheUtilization
-      targetAverageValue: "50%"
+    - name: queue-depth
+      query: 'avg(vllm:num_requests_waiting)'
+      target: "5"
 `
 			cmd = exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(scalerYAML)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create LLMScaler")
 
-			By("waiting for the operator to scale the deployment to 2 replicas")
+			By("waiting for the operator to scale the deployment up to maxReplicas")
 			verifyScale := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "deployment", "mock-llm-deployment", "-n", "default", "-o", "jsonpath={.spec.replicas}")
+				cmd := exec.Command("kubectl", "get", "deployment", "mock-llm-deployment",
+					"-n", "default",
+					"-o", "jsonpath={.spec.replicas}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				// We expect 2 because our mock metric returns 85, and target is 50. ceil(1 * 85/50) = 2.
-				g.Expect(output).To(Equal("2"))
+				// The mock returns a fixed 100 against target 5, so the
+				// recommendation ceil(readyReplicas * 100/5) always exceeds
+				// maxReplicas; the fleet is driven to (and pinned at) maxReplicas.
+				g.Expect(output).To(Equal("5"))
 			}
-			Eventually(verifyScale, 2*time.Minute, 5*time.Second).Should(Succeed())
+			Eventually(verifyScale, 2*time.Minute, 3*time.Second).Should(Succeed())
 
 			By("cleaning up the test resources")
+			cmd = exec.Command("kubectl", "delete", "llmscaler", "test-scaler", "-n", "default")
+			_, _ = utils.Run(cmd)
 			cmd = exec.Command("kubectl", "delete", "deployment", "mock-llm-deployment", "-n", "default")
 			_, _ = utils.Run(cmd)
-			cmd = exec.Command("kubectl", "delete", "llmscaler", "test-scaler", "-n", "default")
+			cmd = exec.Command("kubectl", "delete", "deployment", "mock-prometheus", "-n", "default")
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "service", "mock-prometheus", "-n", "default")
 			_, _ = utils.Run(cmd)
 		})
 

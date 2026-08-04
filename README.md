@@ -8,25 +8,11 @@ rather than CPU/memory. Think of it as an HPA specialized for token-serving.
 
 ## Description
 
-The operator introduces a single CRD, **`LLMScaler`** (`autoscaling.4pd.io`),
-that points at a scalable workload and drives its replica count from a metrics
-source.
+The operator introduces a single CRD, **`LLMScaler`** (`autoscaling.4pd.io`), that points at a scalable workload and drives its replica count from a metrics source.
 
-- **Target** (`spec.targetRef`): any `Deployment`, `StatefulSet`, or
-  `LeaderWorkerSet` (handled generically via the unstructured client).
-- **Metrics** (`spec.metrics`): each entry is a **PromQL instant query** plus a
-  per-replica `target`, evaluated against `spec.serverAddress`. The query should
-  return a single averaged value (e.g. wrap it in `avg(...)`), and label filters
-  are baked into the query itself. **Scope the query to this deployment's pods**,
-  not just the model — otherwise multiple deployments serving the same model are
-  averaged together. Filter on `namespace` plus a per-deployment label such as
-  `app` (the chart's ServiceMonitor exposes `app` via `podTargetLabels`;
-  `namespace` is always present). `namespace` matters because release names can
-  repeat across namespaces. Example:
-  `query: avg(vllm:kv_cache_usage_perc{namespace="default", app="opt-125m-vllm"})`,
-  `target: "0.8"`. The same applies to `scaleDown.deletionCostQuery`.
-- **Headers** (`spec.serverHeaders`): arbitrary headers sent with every
-  metric-fetch request (e.g. `Authorization` for a secured Prometheus).
+- **Target** (`spec.targetRef`): any `Deployment`, `StatefulSet`, or `LeaderWorkerSet` (handled generically via the unstructured client).
+- **Metrics** (`spec.metrics`): each entry is a **PromQL query** plus a per-replica `target`, evaluated against `spec.serverAddress`. The query should return a single aggregated value (e.g. wrap it in `avg(...)`), with label filters baked in. Instant (`avg(...)`) and range (`avg(avg_over_time(...[1m]))`) queries are both valid — nothing enforces one, it's a trade-off. As a rule of thumb, a short `avg_over_time([1m])` survives a missed scrape and filters single-sample spikes while keeping scale-up responsive, provided you keep the window short (~1m for bursty queue depth, ~2m for slower-moving KV-cache); down-conservatism is better handled by `scaleDown.stabilizationWindowSeconds` than by a long metric window. **Scope the query to this deployment's pods**, not just the model — otherwise multiple deployments serving the same model get averaged together. Filter on `namespace` plus a per-deployment label such as `app` (the chart's ServiceMonitor exposes `app` via `podTargetLabels`; `namespace` is always present, and matters because release names can repeat across namespaces). Example: `query: avg(vllm:kv_cache_usage_perc{namespace="default", app="opt-125m-vllm"})`, `target: "0.8"`. The same applies to `scaleDown.deletionCostQuery`.
+- **Headers** (`spec.serverHeaders`): arbitrary headers sent with every metric-fetch request (e.g. `Authorization` for a secured Prometheus).
 
 ### Scaling algorithm
 
@@ -37,63 +23,29 @@ desired = ceil(readyReplicas × currentValue / targetValue)   # max across metri
 desired = clamp(desired, minReplicas, maxReplicas)
 ```
 
-- Computed off the target's **ready** replicas (actual serving capacity), so it
-  does not compound on pods that were just requested but haven't started.
-- The controller watches the `LLMScaler` with `GenerationChangedPredicate`, so
-  its own status writes don't re-trigger reconciliation. Periodic evaluation is
-  driven solely by `RequeueAfter(syncPeriod)`, which paces each scale step.
-- **Rollout guard**: while a Deployment target is mid-rollout (spec not yet
-  observed, or not all replicas on the new template), scaling is deferred. New
-  pods start with cold KV caches that both distort the metric average and would
-  be mis-picked as scale-down victims, so the controller waits for the rollout
-  to settle before acting.
-- **Scale-down stabilization** (`spec.scaleDown.stabilizationWindowSeconds`,
-  0 = off): replicas are held at the highest recommendation seen within the
-  window, so a brief metric dip doesn't shrink the fleet. Scale-up is immediate.
+- Computed off the target's **ready** replicas (actual serving capacity), so it does not compound on pods that were just requested but haven't started.
+- The controller watches the `LLMScaler` with `GenerationChangedPredicate`, so its own status writes don't re-trigger reconciliation. Periodic evaluation is driven solely by `RequeueAfter(syncPeriod)`, which paces each scale step.
+- **Rollout guard**: while a Deployment target is mid-rollout (spec not yet observed, or not all replicas on the new template), scaling is deferred. New pods start with cold KV caches that both distort the metric average and would be mis-picked as scale-down victims, so the controller waits for the rollout to settle before acting.
+- **Scale-down stabilization** (`spec.scaleDown.stabilizationWindowSeconds`, 0 = off): replicas are held at the highest recommendation seen within the window, so a brief metric dip doesn't shrink the fleet.
+- **Scale-up is immediate** — no scale-up stabilization window, so capacity is added as soon as the metric warrants it (the fast-up / slow-down shape). It stays bounded because `desired` is computed off *ready* replicas (no compounding) and clamped to `maxReplicas`. A scale-up rate cap for slow-starting pods is intentionally not implemented — vLLM pods are heavy, so a `1 → maxReplicas` jump can start several at once and briefly overshoot before they serve; add a step cap only if that overshoot actually hurts you.
 
 ### Cache-aware scale-down
 
-On scale-down, which pod goes matters: evicting a pod with a hot KV cache wastes
-warm capacity. Two mechanisms combine (`spec.scaleDown.behavior`, default
-`CacheAware`; set `None` to opt out):
+On scale-down, which pod goes matters: evicting a pod with a hot KV cache wastes warm capacity. Two mechanisms combine (`spec.scaleDown.behavior`, default `CacheAware`; set `None` to opt out):
 
-1. **Preferred victim selection** — before lowering `spec.replicas`, the
-   controller sets a low `controller.kubernetes.io/pod-deletion-cost` on exactly
-   the pods being removed (coldest-cache first), so the ReplicaSet deletes those
-   first. This is done **only at scale-down time**, on **only the sacrificed
-   pods** — never as a per-metric update — because Kubernetes warns that
-   frequent, metric-driven updates to this annotation overload the apiserver. It
-   is **best-effort** (unready pods still go first, etc.) and applies only to
-   **Deployment/ReplicaSet** targets; StatefulSet/LWS scale-down is ordinal-based
-   and ignores the hint.
-2. **Graceful drain** — a `preStop` hook plus `terminationGracePeriodSeconds`
-   (see `test/charts/vllm-mock`) keeps a terminating pod serving until it is
-   removed from Service endpoints and in-flight requests drain, so scale-down is
-   safe *regardless* of which pod the ReplicaSet ultimately picks. Victim
-   selection is therefore an optimization, not a correctness requirement.
+1. **Preferred victim selection** — before lowering `spec.replicas`, the controller sets a low `controller.kubernetes.io/pod-deletion-cost` on exactly the pods being removed (coldest-cache first), so the ReplicaSet deletes those first. This is done **only at scale-down time**, on **only the sacrificed pods** — never as a per-metric update — because Kubernetes warns that frequent, metric-driven updates to this annotation overload the apiserver. It is **best-effort** (unready pods still go first, etc.) and applies only to **Deployment/ReplicaSet** targets; StatefulSet/LWS scale-down is ordinal-based and ignores the hint.
+2. **Graceful drain** — a `preStop` hook plus `terminationGracePeriodSeconds` (see `test/charts/vllm-mock`) keeps a terminating pod serving until it is removed from Service endpoints and in-flight requests drain, so scale-down is safe *regardless* of which pod the ReplicaSet ultimately picks. Victim selection is therefore an optimization, not a correctness requirement.
 
 Coldest-pod ranking has two modes:
 
-- **PromQL-defined cost** — set `spec.scaleDown.deletionCostQuery` to an instant
-  query that returns one series per pod (carrying a `pod` label). At scale-down
-  time the controller evaluates it against `spec.serverAddress` and writes each
-  pod's `pod-deletion-cost` from the sample value (lower = deleted first). E.g.
-  `vllm:kv_cache_usage_perc{namespace="default"} * 100` keeps warmer pods.
-- **Heuristic fallback** — when no query is set, newest pod = coldest cache, and
-  only the sacrificed pods are marked.
+- **PromQL-defined cost** — set `spec.scaleDown.deletionCostQuery` to a query that returns one series per pod (carrying a `pod` label). At scale-down time the controller evaluates it against `spec.serverAddress` and writes each pod's `pod-deletion-cost` from the sample value (lower = deleted first). E.g. `vllm:kv_cache_usage_perc{namespace="default"} * 100` keeps warmer pods.
+- **Heuristic fallback** — when no query is set, newest pod = coldest cache, and only the sacrificed pods are marked.
 
-> Patching a live Pod's `pod-deletion-cost` annotation is an in-place metadata
-> write — it does **not** restart the pod. (Changing the Deployment's pod
-> *template* would trigger a rollout; changing the annotation on the running Pod
-> does not.)
+> Patching a live Pod's `pod-deletion-cost` annotation is an in-place metadata write — it does **not** restart the pod. (Changing the Deployment's pod *template* would trigger a rollout; changing the annotation on the running Pod does not.)
 
 ### Testing the scale operation
 
-Tiny models (e.g. `facebook/opt-125m`) never fill their KV cache enough to trip
-a real threshold. The `vllm-mock` chart ships an optional `metricsMock`
-(`--set metricsMock.enabled=true`) that returns a fixed metric value, so the
-scaler can be driven to scale up/down deterministically. See
-`test/charts/vllm-mock/values.yaml`.
+Tiny models (e.g. `facebook/opt-125m`) never fill their KV cache enough to trip a real threshold. The `vllm-mock` chart ships an optional `metricsMock` (`--set metricsMock.enabled=true`) that returns a fixed metric value, so the scaler can be driven to scale up/down deterministically. See `test/charts/vllm-mock/values.yaml`.
 
 ## Getting Started
 
