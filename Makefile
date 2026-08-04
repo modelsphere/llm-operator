@@ -115,6 +115,11 @@ lint-format: golangci-lint ## Apply gofmt + goimports via golangci-lint formatte
 lint-config: golangci-lint ## Verify golangci-lint linter configuration
 	"$(GOLANGCI_LINT)" config verify
 
+.PHONY: hooks
+hooks: ## Install the git hooks in .githooks (run once per clone)
+	git config core.hooksPath .githooks
+	@echo "core.hooksPath -> .githooks"
+
 ##@ Build
 
 .PHONY: build

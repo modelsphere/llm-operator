@@ -20,9 +20,14 @@ fi
 # working-tree-vs-index diff as a patch, then reset the working tree to the
 # index version so formatters operate only on what is being committed.
 # After all checks run, formatter changes are re-staged and patches are
-# re-applied (--3way) to bring back the user's WIP. If the formatter touched
-# the same lines as an unstaged edit, the re-apply leaves a .rej file and the
-# hook fails loudly with the patch path preserved for manual recovery.
+# re-applied to bring back the user's WIP. If the formatter touched the same
+# lines as an unstaged edit, the re-apply fails loudly with the patch path
+# preserved for manual recovery.
+#
+# The re-apply MUST NOT use --3way: per git-apply(1), --index "be implied by
+# other options such as --3way", so a 3-way re-apply also writes the index and
+# silently promotes the restored WIP into the commit (MM collapses to M ).
+# Plain `git apply` touches the working tree only, which is what we want.
 
 ORIG_DIR=$(pwd)
 PATCH_DIR=$(mktemp -d)
@@ -35,7 +40,7 @@ restore_unstaged() {
     for file in "${STASHED_FILES[@]}"; do
         local patch="$PATCH_DIR/$i.patch"
         if [ -s "$patch" ]; then
-            if ! git apply --3way --whitespace=nowarn "$patch" 2>/dev/null; then
+            if ! git apply --whitespace=nowarn "$patch" 2>/dev/null; then
                 echo ""
                 echo "⚠️  Could not re-apply unstaged changes to: $file"
                 echo "   (formatter likely touched the same lines)"
