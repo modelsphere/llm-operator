@@ -4,6 +4,8 @@ A Kubernetes operator that autoscales LLM inference workloads (e.g. vLLM) on
 LLM-specific signals — KV-cache utilization, queue depth, TPM/capacity load —
 rather than CPU/memory. Think of it as an HPA specialized for token-serving.
 
+![arch](./architecture.svg)
+
 ## Description
 
 The operator introduces a single CRD, **`LLMScaler`** (`autoscaling.4pd.io`),
