@@ -31,17 +31,63 @@ desired = clamp(desired, minReplicas, maxReplicas)
 
 ### Cache-aware scale-down
 
-On scale-down, which pod goes matters: evicting a pod with a hot KV cache wastes warm capacity. Two mechanisms combine (`spec.scaleDown.behavior`, default `CacheAware`; set `None` to opt out):
+Deleting a pod with a hot KV cache throws away a warm cache someone paid for. `spec.scaleDown.behavior`, default `CacheAware`; `None` to turn off. Two steps:
 
-1. **Preferred victim selection** — before lowering `spec.replicas`, the controller sets a low `controller.kubernetes.io/pod-deletion-cost` on exactly the pods being removed (coldest-cache first), so the ReplicaSet deletes those first. This is done **only at scale-down time**, on **only the sacrificed pods** — never as a per-metric update — because Kubernetes warns that frequent, metric-driven updates to this annotation overload the apiserver. It is **best-effort** (unready pods still go first, etc.) and applies only to **Deployment/ReplicaSet** targets; StatefulSet/LWS scale-down is ordinal-based and ignores the hint.
-2. **Graceful drain** — a `preStop` hook plus `terminationGracePeriodSeconds` (see `test/charts/vllm-mock`) keeps a terminating pod serving until it is removed from Service endpoints and in-flight requests drain, so scale-down is safe *regardless* of which pod the ReplicaSet ultimately picks. Victim selection is therefore an optimization, not a correctness requirement.
+1. **Preferred victim selection** — choose the coldest pod to delete.
+2. **Graceful drain** — let that pod finish what it is doing before it goes, and force it to stop if it takes too long.
 
-Coldest-pod ranking has two modes:
+Deleting a pod starts two things at the same time, and the pod only controls the one on the right:
 
-- **PromQL-defined cost** — set `spec.scaleDown.deletionCostQuery` to a query that returns one series per pod (carrying a `pod` label). At scale-down time the controller evaluates it against `spec.serverAddress` and writes each pod's `pod-deletion-cost` from the sample value (lower = deleted first). E.g. `vllm:kv_cache_usage_perc{namespace="default"} * 100` keeps warmer pods.
-- **Heuristic fallback** — when no query is set, newest pod = coldest cache, and only the sacrificed pods are marked.
+```mermaid
+flowchart TD
+    M["metric below target for<br/>stabilizationWindowSeconds"] --> V["① mark coldest pod<br/>pod-deletion-cost = low"]
+    V --> RS["ReplicaSet: spec.replicas -= 1"]
+    RS --> D(["Pod deleted · deletionTimestamp set"])
 
-> Patching a live Pod's `pod-deletion-cost` annotation is an in-place metadata write — it does **not** restart the pod. (Changing the Deployment's pod *template* would trigger a rollout; changing the annotation on the running Pod does not.)
+    subgraph NET ["taking the pod out of the load balancer<br/>(the pod cannot see any of this)"]
+        direction TB
+        C1["EndpointSlice entry marked<br/>terminating=true, ready=false"]
+        C2["cilium-agent on every node<br/>gets the update"]
+        C3["eBPF maps rewritten:<br/>new connections go elsewhere"]
+        C1 --> C2 --> C3
+    end
+
+    subgraph POD ["② shutting the pod down<br/>(all of this must fit in terminationGracePeriodSeconds)"]
+        direction TB
+        K1["preStop: wait endpointSyncSeconds<br/>long enough for the left side to finish"]
+        K2["preStop: wait until vLLM is idle<br/>at most drainSeconds"]
+        K3["SIGTERM: vLLM finishes what is left<br/>at most --shutdown-timeout"]
+        K4(["container exits"])
+        K1 --> K2 --> K3 --> K4
+    end
+
+    D --> C1
+    D --> K1
+    POD -.->|"if that time runs out first"| KILL(["SIGKILL: pod dies,<br/>requests still running are lost"])
+```
+
+Neither side waits for the other. The kubelet starts `preStop` without knowing whether the pod has been taken out of the load balancer yet, and the pod has no way to ask — so it just waits `endpointSyncSeconds` first and lets the left side catch up. That is the one number you may need to tune.
+
+#### 1. Preferred victim selection
+
+Before lowering `spec.replicas`, the controller sets a low `controller.kubernetes.io/pod-deletion-cost` on the pods being removed, so the ReplicaSet deletes those first.
+
+- Set **only when scaling down**, and **only on the pods being removed** — never on every metric check, because Kubernetes warns that frequent updates to this annotation overload the apiserver.
+- It is a **hint, not a guarantee**: unready pods are still deleted first. It also works on **Deployment/ReplicaSet only** — StatefulSet and LWS delete by ordinal and ignore it.
+- It only edits an annotation on the running pod, so it does **not** restart anything. (Editing the Deployment's pod *template* would start a rollout; this does not.)
+- Two ways to decide which pod is coldest:
+  - **Ask Prometheus** — `spec.scaleDown.deletionCostQuery` is a query returning one result per pod (with a `pod` label), run against `spec.serverAddress`. Each pod's value becomes its cost, and the lowest goes first. E.g. `vllm:kv_cache_usage_perc{namespace="default"} * 100` keeps the fuller caches.
+  - **Guess** — with no query set, the newest pod is assumed to have the coldest cache.
+
+#### 2. Graceful drain
+
+A pod that is being deleted keeps serving until it is out of the load balancer and its remaining requests are done. `test/charts/vllm-mock` sets up the three steps on the right-hand side of the diagram:
+
+- **Wait `endpointSyncSeconds`** — always waits the full time, even on an idle pod, because there is nothing to check. Set it to however long whatever routes traffic to this pod needs to notice it is going away: Cilium suggests ~1s for a ClusterIP Service, ~10s if an external load balancer is in front.
+- **Wait for vLLM to go idle** — watches `vllm:num_requests_running` and `vllm:num_requests_waiting` and stops as soon as both are zero, waiting at most `drainSeconds`. An idle pod shuts down right away instead of waiting the whole time. If the check fails, it assumes the pod is still busy and keeps waiting.
+- **`--shutdown-timeout`** (vLLM ≥ 0.18.0) — once SIGTERM arrives, vLLM's default of `0` **kills** any request still running. Setting it above zero lets those requests finish instead.
+
+All three share the same `terminationGracePeriodSeconds` budget. When it runs out the kubelet stops waiting and sends SIGKILL, and any request still running dies with the pod — the one outcome all of this exists to avoid. It can land in any of the three steps, not just the last one, so the chart refuses to render if `endpointSyncSeconds + drainSeconds + shutdownTimeout` adds up to more than the budget.
 
 ### Testing the scale operation
 

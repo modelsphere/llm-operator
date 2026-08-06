@@ -11,15 +11,45 @@ model:
   gpus: "1"
 
 # Graceful shutdown / cache-aware scale-down draining.
-# Must be >= lifecycle.preStop.drainSeconds plus the longest in-flight request.
+#
+# A pod being deleted goes through two stages, and both come out of the same
+# timer, which starts the moment the pod is marked Terminating:
+#
+#   1. preStop  -- up to endpointSyncSeconds + drainSeconds
+#   2. SIGTERM  -- up to lifecycle.shutdownTimeout (vLLM finishing up)
+#
+# If the two together do not fit in terminationGracePeriodSeconds, the kubelet
+# kills the pod partway through and any request still running dies with it. The
+# chart checks this when it renders, so a bad combination fails `helm install`
+# instead of quietly dropping requests later.
 terminationGracePeriodSeconds: 60
 lifecycle:
   preStop:
     enabled: true
-    # Seconds vLLM keeps serving after termination starts, so the pod is
-    # dropped from Service endpoints (no new requests) and in-flight requests
-    # drain before SIGTERM is delivered.
+    # Stage 1a: keep serving while the cluster takes this pod out of the load
+    # balancer (Cilium, kube-proxy, ...), so no new requests are sent here.
+    #
+    # This always waits the full time. Kubernetes starts removing the pod from
+    # the load balancer and runs this hook AT THE SAME TIME, not one after the
+    # other, and the pod has no way to check whether that removal finished yet.
+    #
+    # Set it to however long whatever routes traffic here needs to notice. Cilium
+    # suggests ~1s for a ClusterIP Service and ~10s if an external load balancer
+    # is in front; 5 is a safe middle default.
+    endpointSyncSeconds: 5
+    # Stage 1b: how long to wait, at most, for requests already accepted to
+    # finish. The hook watches vLLM's own metrics and moves on as soon as the
+    # server goes idle, so a quiet pod shuts down in about endpointSyncSeconds
+    # instead of always waiting this long.
     drainSeconds: 30
+    # How often to re-check whether vLLM has gone idle.
+    pollIntervalSeconds: 2
+  # Stage 2: vLLM's own --shutdown-timeout. Once SIGTERM arrives, vLLM defaults
+  # to 0, which KILLS anything still running -- the preStop hook above cannot
+  # help a request that ran past its budget. Setting this above zero lets those
+  # last requests finish. Needs vLLM >= 0.18.0; use 0 to leave the flag off
+  # (older images, or to keep vLLM's default of killing on SIGTERM).
+  shutdownTimeout: 15
 
 scaler:
   enabled: true
