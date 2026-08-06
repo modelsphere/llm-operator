@@ -44,11 +44,11 @@ flowchart TD
     V --> RS["ReplicaSet: spec.replicas -= 1"]
     RS --> D(["Pod deleted · deletionTimestamp set"])
 
-    subgraph NET ["taking the pod out of the load balancer<br/>(the pod cannot see any of this)"]
+    subgraph NET ["taking the pod out of rotation<br/>(the pod cannot see any of this)"]
         direction TB
-        C1["EndpointSlice entry marked<br/>terminating=true, ready=false"]
-        C2["cilium-agent on every node<br/>gets the update"]
-        C3["eBPF maps rewritten:<br/>new connections go elsewhere"]
+        C1["EndpointSlice entry marked<br/>ready=false, terminating=true"]
+        C2["everything watching EndpointSlice reacts:<br/>node service proxies, ingress,<br/>gateways, custom routers"]
+        C3["new requests stop arriving<br/>(connections already open keep working)"]
         C1 --> C2 --> C3
     end
 
