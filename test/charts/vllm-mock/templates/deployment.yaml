@@ -20,7 +20,8 @@ metadata:
   labels:
     app: {{ .Release.Name }}-vllm
 spec:
-  replicas: 1
+  # Only the starting value: the LLMScaler owns spec.replicas once it reconciles.
+  replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
       app: {{ .Release.Name }}-vllm
@@ -40,20 +41,27 @@ spec:
           - "--model=/data/models"
           - "--served-model-name={{ .Values.model.name }}"
           - "--host=0.0.0.0"
-          - "--port=8000"
+          - "--port={{ .Values.service.port }}"
           - "--max-model-len={{ .Values.model.maxLen }}"
           {{- if gt (int .Values.lifecycle.shutdownTimeout) 0 }}
           # Once SIGTERM arrives, give requests that are still running this long to finish instead of killing them (vLLM's default is 0 = kill).
           # This catches anything that ran past the preStop hook below.
           - "--shutdown-timeout={{ .Values.lifecycle.shutdownTimeout }}"
           {{- end }}
+        {{- with .Values.env }}
+        env:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
         ports:
-        - containerPort: 8000
+        - containerPort: {{ .Values.service.port }}
           name: http
         volumeMounts:
         - name: model-storage
           mountPath: /data/models
           readOnly: true
+        {{- with .Values.volumeMounts }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
         resources:
           limits:
             nvidia.com/gpu: "{{ .Values.model.gpus }}"
@@ -69,7 +77,7 @@ spec:
                 - |
                   import time, urllib.request
 
-                  METRICS = "http://127.0.0.1:8000/metrics"
+                  METRICS = "http://127.0.0.1:{{ .Values.service.port }}/metrics"
                   # Gauges for what vLLM is serving right now and what it has queued.
                   BUSY = ("vllm:num_requests_running", "vllm:num_requests_waiting")
 
@@ -101,7 +109,7 @@ spec:
         readinessProbe:
           httpGet:
             path: /health
-            port: 8000
+            port: {{ .Values.service.port }}
           initialDelaySeconds: 15
           periodSeconds: 5
       volumes:
@@ -109,3 +117,18 @@ spec:
         hostPath:
           path: {{ .Values.model.localPath }}
           type: DirectoryOrCreate
+      {{- with .Values.volumes }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

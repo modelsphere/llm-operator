@@ -4,71 +4,78 @@
 replicaCount: 1
 
 image:
-  repository: "vllm/vllm-openai"
-  tag: "latest-cu129-ubuntu2404"
+  repository: "lmsysorg/sglang"
+  tag: "latest"
 
 model:
   # The Hugging Face repo ID
   name: "facebook/opt-125m"
   # Where the models are cached on the host node
   localPath: "/mnt/disk0/models/facebook/opt-125m"
-  maxLen: "1024"
+  contextLength: "1024"
   gpus: "1"
 
 service:
   type: ClusterIP
   # The inference and /metrics port. Threaded through the container port, the
-  # Service, the readiness probe, vLLM's --port flag and the preStop drain URL,
-  # so changing it here is enough.
-  port: 8000
+  # Service, the readiness probe, SGLang's --port flag and the preStop drain
+  # URL, so changing it here is enough. SGLang's own default is 30000.
+  port: 30000
 
-# Graceful shutdown / cache-aware scale-down draining.
+# Graceful shutdown: let a pod finish its work before it is deleted.
 #
-# A pod being deleted goes through two stages, and both come out of the same
-# timer, which starts the moment the pod is marked Terminating:
+# SGLang differs from vLLM here in an important way. It ALREADY drains on
+# SIGTERM, with no flag to turn on: its sigterm handler sets gracefully_exit and
+# a watchdog waits for in-flight requests before shutting the schedulers down.
+# But that wait has NO timeout of its own -- it loops until the request count
+# reaches zero. terminationGracePeriodSeconds is therefore not a budget SGLang
+# stays inside, it is the deadline that CUTS SGLang off: whatever is still
+# running when it expires is SIGKILLed.
 #
-#   1. preStop  -- up to endpointSyncSeconds + drainSeconds
-#   2. SIGTERM  -- up to lifecycle.shutdownTimeout (vLLM finishing up)
-#
-# If the two together do not fit in terminationGracePeriodSeconds, the kubelet
-# kills the pod partway through and any request still running dies with it. The
-# chart checks this when it renders, so a bad combination fails `helm install`
-# instead of quietly dropping requests later.
+# So size the grace period past your longest generation, not just past the
+# numbers below.
 terminationGracePeriodSeconds: 60
 lifecycle:
   preStop:
     enabled: true
-    # Stage 1a: keep serving while the cluster takes this pod out of the load
-    # balancer (Cilium, kube-proxy, ...), so no new requests are sent here.
+    # Stage 1a: keep serving while the cluster takes this pod out of rotation,
+    # so no new requests are sent here.
     #
     # This always waits the full time. Kubernetes starts removing the pod from
-    # the load balancer and runs this hook AT THE SAME TIME, not one after the
+    # the EndpointSlice and runs this hook AT THE SAME TIME, not one after the
     # other, and the pod has no way to check whether that removal finished yet.
     #
-    # Set it to however long whatever routes traffic here needs to notice. Cilium
-    # suggests ~1s for a ClusterIP Service and ~10s if an external load balancer
-    # is in front; 5 is a safe middle default.
+    # Set it to however long whatever routes traffic here needs to notice.
+    # Roughly ~1s for an in-cluster ClusterIP Service, ~10s if an external load
+    # balancer has to converge; 5 is a safe middle default.
     endpointSyncSeconds: 5
     # Stage 1b: how long to wait, at most, for requests already accepted to
-    # finish. The hook watches vLLM's own metrics and moves on as soon as the
+    # finish. The hook watches SGLang's own metrics and moves on as soon as the
     # server goes idle, so a quiet pod shuts down in about endpointSyncSeconds
     # instead of always waiting this long.
+    #
+    # Doing the draining HERE, where it is bounded, is what keeps the unbounded
+    # post-SIGTERM drain from running into the SIGKILL deadline.
     drainSeconds: 30
-    # How often to re-check whether vLLM has gone idle.
+    # How often to re-check whether SGLang has gone idle.
     pollIntervalSeconds: 2
-  # Stage 2: vLLM's own --shutdown-timeout. Once SIGTERM arrives, vLLM defaults
-  # to 0, which KILLS anything still running -- the preStop hook above cannot
-  # help a request that ran past its budget. Setting this above zero lets those
-  # last requests finish. Needs vLLM >= 0.18.0; use 0 to leave the flag off
-  # (older images, or to keep vLLM's default of killing on SIGTERM).
-  shutdownTimeout: 15
+  # Stage 2: time reserved for SGLang's own shutdown after SIGTERM. There is no
+  # flag to set here -- this is just headroom we keep free in the grace period,
+  # and the chart checks it fits. It covers SGLang's fixed tail: the drain loop
+  # re-checks every 5s, then schedulers get up to 15s to exit before being
+  # killed. Anything still generating past this is cut off by the kubelet.
+  shutdownReserveSeconds: 20
+  # Sets SGL_FORCE_SHUTDOWN=1, which makes SGLang skip the drain and exit as
+  # soon as SIGTERM lands. Use it when you would rather drop in-flight requests
+  # than wait -- the preStop hook above still runs.
+  forceShutdown: false
 
 scaler:
   enabled: true
   minReplicas: 1
   maxReplicas: 5
   syncPeriodSeconds: 10
-  # Prometheus scrapes vLLM via the serviceMonitor below.
+  # Prometheus scrapes SGLang via the serviceMonitor below.
   # Prometheus query endpoint (the /api/v1/query base). Adjust to your cluster;
   # this is the headless Service the Prometheus Operator creates by default.
   serverAddress: "http://prometheus-operated.monitoring.svc:9090"
@@ -78,19 +85,21 @@ scaler:
   # Each metric is a PromQL query (returning a single averaged value) plus a
   # per-replica target. Scaling compares them as
   # ceil(readyReplicas * value / target). Bake label filters into the query.
-  # The __SCOPE__ token expands to namespace="<ns>", app="<release>-vllm", scoping
-  # the query to THIS deployment's pods — important when several deployments (even
-  # same-named releases in different namespaces) serve the same model.
+  # The __SCOPE__ token expands to namespace="<ns>", app="<release>-sglang",
+  # scoping the query to THIS deployment's pods — important when several
+  # deployments (even same-named releases in different namespaces) serve the
+  # same model.
   # A short avg_over_time window keeps the signal robust to a missed scrape and
   # filters single-sample spikes; keep it short (~1m) so scale-up stays fast —
   # scale-down conservatism belongs in scaleDown.stabilizationWindowSeconds.
   metrics:
     # Queue depth (requests waiting per replica). This is the signal that
     # actually moves under real load on a small model — its KV cache barely
-    # fills, but requests queue once concurrency exceeds vLLM's max-num-seqs.
-    # Scale up when the average waiting requests per replica exceeds target.
+    # fills, but requests queue once concurrency exceeds what SGLang can batch.
+    # Note the name differs from vLLM's: sglang:num_queue_reqs, not
+    # vllm:num_requests_waiting.
     - name: queue-depth
-      query: 'avg(avg_over_time(vllm:num_requests_waiting{__SCOPE__}[1m]))'
+      query: 'avg(avg_over_time(sglang:num_queue_reqs{__SCOPE__}[1m]))'
       target: "5"
   # Cache-aware scale-down. deletionCostQuery is a PromQL instant query that
   # returns one series per pod (carrying a "pod" label); its value becomes that
@@ -105,8 +114,9 @@ scaler:
     # 0 disables it (keeps the metricsMock demo snappy); set e.g. 300 in prod.
     stabilizationWindowSeconds: 0
     deletionCostQuery: ""
-    # Example (scoped to this deployment via __SCOPE__):
-    #   deletionCostQuery: 'vllm:kv_cache_usage_perc{__SCOPE__} * 100'
+    # Example (scoped to this deployment via __SCOPE__). SGLang's KV-cache
+    # equivalent of vllm:kv_cache_usage_perc is sglang:token_usage:
+    #   deletionCostQuery: 'sglang:token_usage{__SCOPE__} * 100'
 
 # Deterministic scale-op simulation. When enabled, the scaler queries this mock
 # instead of real Prometheus, so you can drive scaling by hand: set `value`
@@ -122,7 +132,9 @@ metricsMock:
 serviceMonitor:
   # Requires the Prometheus Operator CRDs (monitoring.coreos.com) to be installed.
   enabled: true
-  # vLLM exposes Prometheus metrics on the inference port at /metrics
+  # SGLang exposes Prometheus metrics on the inference port at /metrics, but ONLY
+  # when started with --enable-metrics (the chart always passes it). Without that
+  # flag the route is not mounted at all and /metrics returns 404.
   path: /metrics
   interval: 15s
   scrapeTimeout: 10s
@@ -131,11 +143,12 @@ serviceMonitor:
   labels:
     release: kube-prometheus-stack
   # Pod labels copied onto the scraped series. `app` lets metric queries scope to
-  # a single deployment (app="<release>-vllm") when several serve the same model.
+  # a single deployment (app="<release>-sglang") when several serve the same model.
   podTargetLabels:
     - app
 
-# Additional environment variables on the vLLM container.
+# Additional environment variables on the SGLang container. Merged with
+# SGL_FORCE_SHUTDOWN when lifecycle.forceShutdown is on.
 env: []
   # - name: HF_TOKEN
   #   valueFrom:
