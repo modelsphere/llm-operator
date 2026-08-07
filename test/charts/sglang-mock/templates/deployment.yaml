@@ -92,8 +92,12 @@ spec:
           {{- with .Values.extraArgs }}
           {{- toYaml . | nindent 10 }}
           {{- end }}
-        {{- if or .Values.lifecycle.forceShutdown .Values.env }}
         env:
+          # false makes /health a plain status check. Left at SGLang's own
+          # default (true) it runs a real 1-token generation, sleeps at least 1s
+          # and can take 20s, which no sane probe timeout survives.
+          - name: SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION
+            value: {{ .Values.healthEndpointGeneration | quote }}
           {{- if .Values.lifecycle.forceShutdown }}
           # Makes SGLang skip its drain and exit as soon as SIGTERM arrives.
           - name: SGL_FORCE_SHUTDOWN
@@ -102,7 +106,6 @@ spec:
           {{- with .Values.env }}
           {{- toYaml . | nindent 10 }}
           {{- end }}
-        {{- end }}
         ports:
         - containerPort: {{ .Values.service.port }}
           name: http

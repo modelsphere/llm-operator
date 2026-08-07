@@ -67,11 +67,17 @@ service:
 # 15s x 80 = 20 minutes of budget. It costs nothing when startup is quick -- the
 # probe simply succeeds early -- so err high rather than risk a restart loop that
 # never lets the model finish loading.
+# timeoutSeconds is NOT optional here. It defaults to 1s, and this node is busy
+# loading 35B of weights across two GPUs while the probe runs -- 1s is not enough
+# even for a cheap endpoint. (The chart also sets
+# SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=false so /health is not a real
+# inference request; without that no timeout below 20s would ever pass.)
 startupProbe:
   httpGet:
     path: /health
     port: http
   periodSeconds: 15
+  timeoutSeconds: 10
   failureThreshold: 80
 
 readinessProbe:
@@ -79,6 +85,7 @@ readinessProbe:
     path: /health
     port: http
   periodSeconds: 10
+  timeoutSeconds: 5
   failureThreshold: 3
 
 # Deep endpoint on purpose: /health only reports a status flag and would keep

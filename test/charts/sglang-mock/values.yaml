@@ -54,6 +54,21 @@ service:
   # changing it here is enough. SGLang's own default is 30000.
   port: 30000
 
+# Makes /health a plain status check (200 / 503-while-starting /
+# 503-while-draining) instead of a real inference request.
+#
+# SGLang ships SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=true, which routes
+# /health through the SAME generate-a-token path as /health_generate. That
+# handler sleeps 1s before its first check and waits up to
+# SGLANG_HEALTH_CHECK_TIMEOUT (20s), so /health can never answer in under a
+# second -- against a probe timeoutSeconds that defaults to 1, it fails forever
+# with "context deadline exceeded".
+#
+# Set explicitly rather than relying on the image default, which has changed
+# between versions. /health_generate is unaffected and stays the deep check used
+# by livenessProbe below.
+healthEndpointGeneration: false
+
 # Probes. `port: http` refers to the container port by name, so it follows
 # service.port automatically.
 #
@@ -63,21 +78,21 @@ service:
 # failureThreshold x periodSeconds is the whole startup budget -- raise
 # failureThreshold for big models (a 30B+ model can need 10-20 minutes).
 #
-# SGLang's /health is cheap: it returns 200 immediately, 503 while the server is
-# still starting, and 503 once a graceful shutdown has begun. /health_generate
-# is the deep version that really generates a token -- usable for readiness, at
-# the cost of a scheduler slot per check.
+# Always set timeoutSeconds. It defaults to 1 second, which is too tight for a
+# server that is busy loading weights even when the endpoint itself is cheap.
 startupProbe:
   httpGet:
     path: /health
     port: http
   periodSeconds: 10
+  timeoutSeconds: 5
   failureThreshold: 30
 readinessProbe:
   httpGet:
     path: /health
     port: http
   periodSeconds: 5
+  timeoutSeconds: 3
   failureThreshold: 3
 # Liveness uses the DEEP endpoint on purpose. /health only reports a status flag
 # and never touches the scheduler, so a wedged scheduler subprocess (CUDA hang,

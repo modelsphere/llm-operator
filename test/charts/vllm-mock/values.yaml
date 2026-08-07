@@ -64,17 +64,21 @@ service:
 # failureThreshold for big models (a 30B+ model can need 10-20 minutes). Until
 # vLLM finishes engine init the port is not answering at all, so the probe fails
 # by connection refusal, which is exactly what the budget is for.
+# Always set timeoutSeconds. It defaults to 1 second, which is too tight for a
+# server that is busy loading weights.
 startupProbe:
   httpGet:
     path: /health
     port: http
   periodSeconds: 10
+  timeoutSeconds: 5
   failureThreshold: 30
 readinessProbe:
   httpGet:
     path: /health
     port: http
   periodSeconds: 5
+  timeoutSeconds: 3
   failureThreshold: 3
 # /health is a fair liveness target here, unlike in the sglang chart: vLLM's
 # handler calls engine_client.check_health(), so it fails when the engine core
