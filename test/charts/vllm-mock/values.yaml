@@ -12,10 +12,34 @@ model:
   name: "facebook/opt-125m"
   # Where the models are cached on the host node
   localPath: "/mnt/disk0/models/facebook/opt-125m"
+  # Where localPath is mounted inside the container. Feeds both the volumeMount
+  # and --model, so the two cannot drift apart.
+  mountPath: "/models"
+  # `Directory` makes the kubelet refuse to start the pod when localPath does not
+  # exist on the node, surfacing a FailedMount event immediately.
+  # `DirectoryOrCreate` would instead create an empty directory and hand it to
+  # the engine, which then fails minutes later with an error pointing at the
+  # model rather than at the mount.
+  hostPathType: Directory
   # Leave empty to omit --max-model-len entirely and let vLLM use the model's
   # own. Only pin it when you really mean to cap the context.
   maxLen: "1024"
   gpus: "1"
+
+# Init container that checks the mounted model directory before the engine gets
+# a chance to start. hostPathType: Directory already catches a missing path; this
+# catches the cases it cannot see -- an empty directory, or a half-synced one
+# where the weights never finished copying. Failing here costs seconds and says
+# exactly what is wrong, instead of a multi-minute load ending in a stack trace.
+#
+# It reuses the engine image, so nothing extra has to be pulled or mirrored into
+# a private registry, and it needs no GPU.
+modelCheck:
+  enabled: true
+  # Each glob must match at least one entry directly under model.mountPath.
+  # Empty the list to only assert the directory is non-empty.
+  requiredGlobs:
+    - "config.json"
 
 # Extra vLLM server flags, appended verbatim to the command line (e.g.
 # --tensor-parallel-size=2). The chart already emits --model,

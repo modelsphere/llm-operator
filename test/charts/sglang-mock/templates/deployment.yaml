@@ -39,12 +39,45 @@ spec:
       # Total time allowed to shut down. The preStop hook AND SGLang draining after SIGTERM both come out of this, or the pod gets killed.
       # Checked at render time by the block at the top of this file.
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- if .Values.modelCheck.enabled }}
+      initContainers:
+      # Refuse to start the engine unless the mounted model directory actually
+      # holds a model. hostPathType above already rejects a missing path; this
+      # covers an empty or half-copied one. Reuses the engine image so no extra
+      # image has to be pulled, and takes no GPU.
+      - name: model-check
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        command:
+          - /bin/sh
+          - -c
+          - |
+            DIR={{ .Values.model.mountPath | quote }}
+            if [ ! -d "$DIR" ]; then
+              echo "model-check: $DIR is not a directory" >&2
+              exit 1
+            fi
+            if [ -z "$(ls -A "$DIR" 2>/dev/null)" ]; then
+              echo "model-check: $DIR is empty -- is {{ .Values.model.localPath }} populated on this node?" >&2
+              exit 1
+            fi
+            {{- range .Values.modelCheck.requiredGlobs }}
+            if [ -z "$(find "$DIR" -maxdepth 1 -name {{ . | quote }} -print -quit)" ]; then
+              echo "model-check: no {{ . }} directly under $DIR -- looks like an incomplete model" >&2
+              exit 1
+            fi
+            {{- end }}
+            echo "model-check: $DIR looks like a model directory"
+        volumeMounts:
+        - name: model-storage
+          mountPath: {{ .Values.model.mountPath }}
+          readOnly: true
+      {{- end }}
       containers:
       - name: sglang
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
         command: ["python3", "-m", "sglang.launch_server"]
         args:
-          - "--model-path=/data/models"
+          - "--model-path={{ .Values.model.mountPath }}"
           - "--served-model-name={{ .Values.model.name }}"
           - "--host=0.0.0.0"
           - "--port={{ .Values.service.port }}"
@@ -75,7 +108,7 @@ spec:
           name: http
         volumeMounts:
         - name: model-storage
-          mountPath: /data/models
+          mountPath: {{ .Values.model.mountPath }}
           readOnly: true
         {{- with .Values.volumeMounts }}
         {{- toYaml . | nindent 8 }}
@@ -153,7 +186,7 @@ spec:
       - name: model-storage
         hostPath:
           path: {{ .Values.model.localPath }}
-          type: DirectoryOrCreate
+          type: {{ .Values.model.hostPathType }}
       {{- with .Values.volumes }}
       {{- toYaml . | nindent 6 }}
       {{- end }}

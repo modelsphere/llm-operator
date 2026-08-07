@@ -32,6 +32,27 @@ model:
   # the model's own. Setting a number here would silently cap a 35B model.
   contextLength: ""
 
+# Assert both halves of the checkpoint, not just the metadata.
+#
+# config.json is safe to require: the script looks one level deep, and SGLang
+# passes --model-path straight to a HF loader, which itself needs config.json at
+# that top level. If it were not there this deployment could never have worked.
+#
+# But config.json ALONE would be a near-useless completeness check. In a partial
+# rsync/scp the small JSON files land first and the multi-GB weight shards are
+# precisely what is missing or truncated -- so the weights glob is the one that
+# actually catches a half-synced model. A 35B checkpoint is sharded, and
+# "*.safetensors" matches model-00001-of-000NN.safetensors.
+#
+# If this checkpoint stores weights as .bin rather than .safetensors, change the
+# second glob -- entries are ANDed, so a wrong one blocks startup entirely.
+# Confirm with:  ls /mnt/disk0/models/modelforge/Qwen3.6-35B-A3B-793303
+modelCheck:
+  enabled: true
+  requiredGlobs:
+    - "config.json"
+    - "*.safetensors"
+
 service:
   type: ClusterIP
   # --port 8050
