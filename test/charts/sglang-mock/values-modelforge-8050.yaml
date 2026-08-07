@@ -90,18 +90,17 @@ nodeSelector: {}
 tolerations: []
 affinity:
   nodeAffinity:
-  requiredDuringSchedulingIgnoredDuringExecution:
-    nodeSelectorTerms:
-    - matchExpressions:
-      - key: nvidia.com/gpu.product
-        operator: In
-        values:
-        - "NVIDIA-H100-80GB-HBM3"
-
-      - key: nvidia.com/cuda.driver-version.full
-        operator: In
-        values:
-        - "575.57.08"
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: nvidia.com/gpu.product
+          operator: In
+          values:
+          - "NVIDIA-H100-80GB-HBM3"
+        - key: nvidia.com/cuda.driver-version.full
+          operator: In
+          values:
+          - "575.57.08"
 
 # Graceful shutdown, sized for this model rather than the chart's opt-125m
 # defaults. A 35B model answering long prompts can generate for minutes, and
