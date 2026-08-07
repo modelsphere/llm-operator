@@ -112,12 +112,21 @@ spec:
                           break
                       time.sleep({{ $preStop.pollIntervalSeconds }})
         {{- end }}
+        {{- with .Values.startupProbe }}
+        # While this is running the kubelet suppresses the other two probes, so a
+        # slow model load cannot trip a restart. Its
+        # failureThreshold x periodSeconds is the entire startup budget.
+        startupProbe:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with .Values.readinessProbe }}
         readinessProbe:
-          httpGet:
-            path: /health
-            port: {{ .Values.service.port }}
-          initialDelaySeconds: 15
-          periodSeconds: 5
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with .Values.livenessProbe }}
+        livenessProbe:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
       volumes:
       - name: model-storage
         hostPath:

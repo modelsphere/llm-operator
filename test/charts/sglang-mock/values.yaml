@@ -26,9 +26,53 @@ extraArgs: []
 service:
   type: ClusterIP
   # The inference and /metrics port. Threaded through the container port, the
-  # Service, the readiness probe, SGLang's --port flag and the preStop drain
-  # URL, so changing it here is enough. SGLang's own default is 30000.
+  # Service, the probes, SGLang's --port flag and the preStop drain URL, so
+  # changing it here is enough. SGLang's own default is 30000.
   port: 30000
+
+# Probes. `port: http` refers to the container port by name, so it follows
+# service.port automatically.
+#
+# The startupProbe is what makes a livenessProbe safe here: until it succeeds
+# the kubelet does not run liveness or readiness at all, so loading a large
+# model cannot be mistaken for a hang and restarted. Its
+# failureThreshold x periodSeconds is the whole startup budget -- raise
+# failureThreshold for big models (a 30B+ model can need 10-20 minutes).
+#
+# SGLang's /health is cheap: it returns 200 immediately, 503 while the server is
+# still starting, and 503 once a graceful shutdown has begun. /health_generate
+# is the deep version that really generates a token -- usable for readiness, at
+# the cost of a scheduler slot per check.
+startupProbe:
+  httpGet:
+    path: /health
+    port: http
+  periodSeconds: 10
+  failureThreshold: 30
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  periodSeconds: 5
+  failureThreshold: 3
+# Liveness uses the DEEP endpoint on purpose. /health only reports a status flag
+# and never touches the scheduler, so a wedged scheduler subprocess (CUDA hang,
+# NCCL deadlock -- the failure that actually needs a restart) would still answer
+# 200 and this probe would never fire. /health_generate submits a 1-token request
+# and returns as soon as ANY scheduler response is seen, so it stays cheap under
+# load and only really generates when the server is idle.
+#
+# timeoutSeconds MUST stay above SGLang's own HEALTH_CHECK_TIMEOUT (20s, env
+# SGLANG_HEALTH_CHECK_TIMEOUT). Below that the kubelet hangs up before SGLang
+# answers and counts a failure the server never had a chance to avoid.
+livenessProbe:
+  httpGet:
+    path: /health_generate
+    port: http
+  periodSeconds: 30
+  timeoutSeconds: 25
+  # 30s x 3 = 90s wedged before a restart.
+  failureThreshold: 3
 
 # Graceful shutdown: let a pod finish its work before it is deleted.
 #

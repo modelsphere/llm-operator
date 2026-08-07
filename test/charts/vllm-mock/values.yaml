@@ -26,9 +26,44 @@ extraArgs: []
 service:
   type: ClusterIP
   # The inference and /metrics port. Threaded through the container port, the
-  # Service, the readiness probe, vLLM's --port flag and the preStop drain URL,
-  # so changing it here is enough.
+  # Service, the probes, vLLM's --port flag and the preStop drain URL, so
+  # changing it here is enough.
   port: 8000
+
+# Probes. `port: http` refers to the container port by name, so it follows
+# service.port automatically.
+#
+# The startupProbe is what makes a livenessProbe safe here: until it succeeds
+# the kubelet does not run liveness or readiness at all, so loading a large
+# model cannot be mistaken for a hang and restarted. Its
+# failureThreshold x periodSeconds is the whole startup budget -- raise
+# failureThreshold for big models (a 30B+ model can need 10-20 minutes). Until
+# vLLM finishes engine init the port is not answering at all, so the probe fails
+# by connection refusal, which is exactly what the budget is for.
+startupProbe:
+  httpGet:
+    path: /health
+    port: http
+  periodSeconds: 10
+  failureThreshold: 30
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  periodSeconds: 5
+  failureThreshold: 3
+# /health is a fair liveness target here, unlike in the sglang chart: vLLM's
+# handler calls engine_client.check_health(), so it fails when the engine core
+# dies rather than only when the HTTP process does. No deeper endpoint needed.
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  periodSeconds: 10
+  timeoutSeconds: 5
+  # Deliberately slack: a busy server answering /health slowly should not be
+  # restarted. Only a genuinely wedged process should fail this many times.
+  failureThreshold: 6
 
 # Graceful shutdown / cache-aware scale-down draining.
 #

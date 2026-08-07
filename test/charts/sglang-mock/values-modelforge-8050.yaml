@@ -37,6 +37,45 @@ service:
   # --port 8050
   port: 8050
 
+# The chart's defaults are sized for opt-125m. A 35B MoE with --tp-size 2 has to
+# load weights across two GPUs and capture CUDA graphs before it answers, which
+# is minutes, not seconds.
+#
+# The startupProbe is the important one: while it is running the kubelet does not
+# run liveness or readiness at all, so a long load cannot be mistaken for a hang.
+# 15s x 80 = 20 minutes of budget. It costs nothing when startup is quick -- the
+# probe simply succeeds early -- so err high rather than risk a restart loop that
+# never lets the model finish loading.
+startupProbe:
+  httpGet:
+    path: /health
+    port: http
+  periodSeconds: 15
+  failureThreshold: 80
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  periodSeconds: 10
+  failureThreshold: 3
+
+# Deep endpoint on purpose: /health only reports a status flag and would keep
+# answering 200 with a wedged scheduler. /health_generate proves the scheduler
+# still round-trips, and short-circuits on any scheduler activity so it costs
+# nothing while the server is busy.
+#
+# timeoutSeconds must stay above SGLang's HEALTH_CHECK_TIMEOUT (20s). Slack on
+# failureThreshold because a restart costs another full 20-minute load:
+# 60s x 4 = 4 minutes wedged before we give up on it.
+livenessProbe:
+  httpGet:
+    path: /health_generate
+    port: http
+  periodSeconds: 60
+  timeoutSeconds: 25
+  failureThreshold: 4
+
 # Everything from the script's command line that the chart does not already
 # emit. --model-path, --served-model-name, --host, --port and --enable-metrics
 # are added by the chart itself, so they are intentionally absent here.
