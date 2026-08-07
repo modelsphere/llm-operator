@@ -48,11 +48,17 @@ spec:
           - "--served-model-name={{ .Values.model.name }}"
           - "--host=0.0.0.0"
           - "--port={{ .Values.service.port }}"
-          - "--context-length={{ .Values.model.contextLength }}"
+          {{- with .Values.model.contextLength }}
+          # Left out when empty, so SGLang uses the model's own context length.
+          - "--context-length={{ . }}"
+          {{- end }}
           # Not optional for this chart. SGLang mounts /metrics only when this is set
           # (it defaults to off), and without it both the LLMScaler queries and the
-          # preStop drain below have nothing to read.
+          # preStop drain below have nothing to read. Do not repeat it in extraArgs.
           - "--enable-metrics"
+          {{- with .Values.extraArgs }}
+          {{- toYaml . | nindent 10 }}
+          {{- end }}
         {{- if or .Values.lifecycle.forceShutdown .Values.env }}
         env:
           {{- if .Values.lifecycle.forceShutdown }}

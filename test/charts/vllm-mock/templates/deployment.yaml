@@ -42,7 +42,13 @@ spec:
           - "--served-model-name={{ .Values.model.name }}"
           - "--host=0.0.0.0"
           - "--port={{ .Values.service.port }}"
-          - "--max-model-len={{ .Values.model.maxLen }}"
+          {{- with .Values.model.maxLen }}
+          # Left out when empty, so vLLM uses the model's own max length.
+          - "--max-model-len={{ . }}"
+          {{- end }}
+          {{- with .Values.extraArgs }}
+          {{- toYaml . | nindent 10 }}
+          {{- end }}
           {{- if gt (int .Values.lifecycle.shutdownTimeout) 0 }}
           # Once SIGTERM arrives, give requests that are still running this long to finish instead of killing them (vLLM's default is 0 = kill).
           # This catches anything that ran past the preStop hook below.

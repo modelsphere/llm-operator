@@ -12,8 +12,16 @@ model:
   name: "facebook/opt-125m"
   # Where the models are cached on the host node
   localPath: "/mnt/disk0/models/facebook/opt-125m"
+  # Leave empty to omit --context-length entirely and let SGLang use the model's
+  # own. Only pin it when you really mean to cap the context.
   contextLength: "1024"
   gpus: "1"
+
+# Extra SGLang server flags, appended verbatim to the command line (e.g.
+# --tp-size=2, --mem-fraction-static=0.83). The chart already emits
+# --model-path, --served-model-name, --host, --port and --enable-metrics, so do
+# not repeat those here.
+extraArgs: []
 
 service:
   type: ClusterIP

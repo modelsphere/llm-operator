@@ -12,8 +12,16 @@ model:
   name: "facebook/opt-125m"
   # Where the models are cached on the host node
   localPath: "/mnt/disk0/models/facebook/opt-125m"
+  # Leave empty to omit --max-model-len entirely and let vLLM use the model's
+  # own. Only pin it when you really mean to cap the context.
   maxLen: "1024"
   gpus: "1"
+
+# Extra vLLM server flags, appended verbatim to the command line (e.g.
+# --tensor-parallel-size=2). The chart already emits --model,
+# --served-model-name, --host, --port and --shutdown-timeout, so do not repeat
+# those here.
+extraArgs: []
 
 service:
   type: ClusterIP
