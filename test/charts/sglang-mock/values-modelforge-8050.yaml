@@ -88,19 +88,32 @@ volumeMounts:
 # actually have two matching GPUs.
 nodeSelector: {}
 tolerations: []
-affinity: {}
+affinity:
+  nodeAffinity:
+  requiredDuringSchedulingIgnoredDuringExecution:
+    nodeSelectorTerms:
+    - matchExpressions:
+      - key: nvidia.com/gpu.product
+        operator: In
+        values:
+        - "NVIDIA-H100-80GB-HBM3"
+
+      - key: nvidia.com/cuda.driver-version.full
+        operator: In
+        values:
+        - "575.57.08"
 
 # Graceful shutdown, sized for this model rather than the chart's opt-125m
 # defaults. A 35B model answering long prompts can generate for minutes, and
 # SGLang's post-SIGTERM drain has no timeout of its own, so
 # terminationGracePeriodSeconds is what ultimately cuts it off.
-terminationGracePeriodSeconds: 900
+terminationGracePeriodSeconds: 3600
 lifecycle:
   preStop:
     enabled: true
     endpointSyncSeconds: 5
     # Bounded draining happens here, where the hook can exit early once the
-    # server reports idle. 5 + 600 + 20 = 625, inside the 900 above.
+    # server reports idle. 5 + 600 + 20 = 625, inside the 3600 above.
     drainSeconds: 600
     pollIntervalSeconds: 5
   shutdownReserveSeconds: 20
