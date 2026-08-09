@@ -19,7 +19,7 @@ manager:
     repository: harbor.4pd.io/hardcore-tech/llm-operator
     ## Image tag (defaults to Chart.appVersion if not set)
     ##
-    tag: "0.2.1"
+    tag: "0.2.2"
     pullPolicy: IfNotPresent
 
   ## Arguments
