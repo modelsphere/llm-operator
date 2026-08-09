@@ -200,6 +200,15 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			logger.Error(err, "failed to update target resource")
 			return ctrl.Result{}, err
 		}
+
+		// Pace the descent: pin the fleet at what we just wrote for one
+		// stabilization window, and drop the recommendations that were measured
+		// against the larger fleet. Only after the write succeeds — a failed
+		// update leaves the target where it was, so there is nothing to hold at.
+		if targetReplicas < int32(specReplicas) {
+			r.holdAfterScaleDown(req.NamespacedName, targetReplicas,
+				time.Duration(scaler.Spec.ScaleDown.StabilizationWindowSeconds)*time.Second, time.Now())
+		}
 	}
 
 	// 4. Update Status
@@ -240,15 +249,6 @@ func scaleDeferReason(targetObj *unstructured.Unstructured, kind string, specRep
 
 // checkTerminatingReplicas gates the drain half of the scale-down settle guard
 // (see scaleDownSettled).
-//
-// Off pending production validation. With it on, every step waits out the full
-// preStop drain, so a descent is paced by the pod's shutdown time rather than by
-// syncPeriodSeconds — on a slow-draining model that turns a multi-step descent
-// into tens of minutes of holding idle GPUs. Off, the guard keeps only the
-// readyReplicas condition, which in practice clears about a second after each
-// write (see scaleDownSettled for why), so steps are paced by syncPeriodSeconds.
-//
-// Flip to true to re-enable; both paths are covered by the controller tests.
 var checkTerminatingReplicas = false
 
 // scaleDownSettled reports whether the target has finished absorbing the previous
@@ -395,6 +395,37 @@ func capScaleDownStep(current, desired, maxStep int32) int32 {
 		return floor
 	}
 	return desired
+}
+
+// holdAfterScaleDown replaces a scaler's recommendation history with the replica
+// count just written, so the fleet is pinned there for one stabilization window
+// before it may shrink again.
+//
+// Two things happen at once, and both are the point:
+//
+//   - Discarding the history. Every retained recommendation was computed against
+//     a fleet size that no longer exists — the metric is per-replica, so removing
+//     pods is expected to raise it on the ones that remain. Deciding the next step
+//     from samples taken before this one landed is what lets a whole descent
+//     resolve in seconds off a single collapsed reading.
+//   - Seeding the new count. Clearing alone would have the opposite effect: an
+//     empty history makes stabilizeDesired return the current (low) recommendation
+//     immediately. The seeded entry is what holds the floor, since stabilization
+//     returns the window maximum, and it ages out exactly one window later.
+//
+// Scale-up is unaffected — a higher recommendation still wins the max. Seeding the
+// count we wrote (not the one we scaled down from) matters: seeding the old, larger
+// count would read as a scale-up recommendation and undo the step.
+func (r *LLMScalerReconciler) holdAfterScaleDown(key types.NamespacedName, replicas int32, window time.Duration, now time.Time) {
+	if window <= 0 {
+		return // stabilization is off; the operator opted out of pacing too
+	}
+	r.recMu.Lock()
+	defer r.recMu.Unlock()
+	if r.recommendations == nil {
+		r.recommendations = make(map[types.NamespacedName][]scaleRecommendation)
+	}
+	r.recommendations[key] = []scaleRecommendation{{time: now, desired: replicas}}
 }
 
 // forgetRecommendations drops the stabilization history for a deleted scaler.

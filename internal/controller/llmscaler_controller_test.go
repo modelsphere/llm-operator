@@ -276,11 +276,13 @@ var _ = Describe("LLMScaler Controller", func() {
 		})
 
 		It("should ignore still-draining pods while checkTerminatingReplicas is off", func() {
-			// Current production behavior. readyReplicas excludes terminating pods,
-			// so the fleet reads as settled the moment the previous step's pods are
-			// marked for deletion — the descent is paced by syncPeriodSeconds, not
-			// by the drain.
-			Expect(checkTerminatingReplicas).To(BeFalse(), "this spec pins the gated-off behavior")
+			// The fallback path. readyReplicas excludes terminating pods, so the
+			// fleet reads as settled the moment the previous step's pods are marked
+			// for deletion — the descent is then paced by syncPeriodSeconds, not by
+			// the drain.
+			restore := checkTerminatingReplicas
+			checkTerminatingReplicas = false
+			DeferCleanup(func() { checkTerminatingReplicas = restore })
 
 			By("setting 5 ready with 2 still draining")
 			two := int32(2)
@@ -295,8 +297,9 @@ var _ = Describe("LLMScaler Controller", func() {
 		})
 
 		It("should also wait for the drain when checkTerminatingReplicas is on", func() {
+			restore := checkTerminatingReplicas
 			checkTerminatingReplicas = true
-			DeferCleanup(func() { checkTerminatingReplicas = false })
+			DeferCleanup(func() { checkTerminatingReplicas = restore })
 
 			By("setting 5 ready with 2 still draining")
 			two := int32(2)
@@ -351,6 +354,40 @@ var _ = Describe("LLMScaler Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: targetDeployName, Namespace: scalerNamespace}, deploy)).To(Succeed())
 			// ceil(2 * 0.85/0.5) = 4; the settle guard only gates scale-down.
 			Expect(*deploy.Spec.Replicas).To(Equal(int32(4)))
+		})
+
+		It("should hold for the stabilization window between scale-down steps", func() {
+			By("enabling a 300s window and a 2-replica step cap")
+			scaler := &autoscalingv1alpha1.LLMScaler{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, scaler)).To(Succeed())
+			scaler.Spec.ScaleDown.StabilizationWindowSeconds = 300
+			scaler.Spec.ScaleDown.MaxStepReplicas = 2
+			Expect(k8sClient.Update(ctx, scaler)).To(Succeed())
+
+			By("starting settled at 5 with an idle metric")
+			unsettledAtFive(5, nil)
+
+			controllerReconciler := &LLMScalerReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("checking the first step landed")
+			Expect(replicasNow()).To(Equal(int32(3)))
+
+			By("settling the fleet at 3 so neither the rollout nor the settle guard fires")
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: targetDeployName, Namespace: scalerNamespace}, deploy)).To(Succeed())
+			deploy.Status.ObservedGeneration = deploy.Generation
+			deploy.Status.Replicas = 3
+			deploy.Status.UpdatedReplicas = 3
+			deploy.Status.ReadyReplicas = 3
+			Expect(k8sClient.Status().Update(ctx, deploy)).To(Succeed())
+
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("checking the next step is held; without the pin it would drop to 1")
+			Expect(replicasNow()).To(Equal(int32(3)))
 		})
 
 		It("should walk down one step at a time when maxStepReplicas is set", func() {
@@ -431,6 +468,53 @@ func TestStabilizeDesired(t *testing.T) {
 	// Scale-up is immediate regardless of history.
 	if got := r.stabilizeDesired(key, 9, window, t0.Add(61*time.Second)); got != 9 {
 		t.Fatalf("scale-up: got %d, want 9", got)
+	}
+}
+
+// TestHoldAfterScaleDown checks that pinning the written count after a scale-down
+// paces the next one a full stabilization window later, rather than letting the
+// whole descent resolve off one collapsed reading.
+func TestHoldAfterScaleDown(t *testing.T) {
+	r := &LLMScalerReconciler{}
+	key := types.NamespacedName{Namespace: "ns", Name: "s"}
+	t0 := time.Now()
+	window := 300 * time.Second
+
+	// Fleet of 8, metric collapses; the peak is still in the window, so it holds.
+	if got := r.stabilizeDesired(key, 8, window, t0); got != 8 {
+		t.Fatalf("peak: got %d, want 8", got)
+	}
+	// A window later the peak has expired and the low recommendation wins: the
+	// controller writes 6 (an 8 -> 1 recommendation capped to a 2-replica step)
+	// and pins it.
+	if got := r.stabilizeDesired(key, 1, window, t0.Add(301*time.Second)); got != 1 {
+		t.Fatalf("first step: got %d, want 1", got)
+	}
+	r.holdAfterScaleDown(key, 6, window, t0.Add(301*time.Second))
+
+	// Within the window the fleet is held at 6 even though the metric still reads
+	// idle. Before the pin, these evaluations would each have shrunk it again.
+	for _, dt := range []time.Duration{311, 400, 600} {
+		if got := r.stabilizeDesired(key, 1, window, t0.Add(dt*time.Second)); got != 6 {
+			t.Errorf("held at +%s: got %d, want 6", dt*time.Second, got)
+		}
+	}
+	// Once the pin ages out, the next step is allowed.
+	if got := r.stabilizeDesired(key, 1, window, t0.Add(602*time.Second)); got != 1 {
+		t.Fatalf("after window: got %d, want 1", got)
+	}
+
+	// Scale-up is never blocked by the pin.
+	r.holdAfterScaleDown(key, 6, window, t0.Add(700*time.Second))
+	if got := r.stabilizeDesired(key, 9, window, t0.Add(710*time.Second)); got != 9 {
+		t.Fatalf("scale-up during hold: got %d, want 9", got)
+	}
+
+	// With stabilization off there is nothing to pace with, so the pin is a no-op.
+	off := &LLMScalerReconciler{}
+	off.holdAfterScaleDown(key, 6, 0, t0)
+	if got := off.stabilizeDesired(key, 1, 0, t0); got != 1 {
+		t.Fatalf("window disabled: got %d, want 1", got)
 	}
 }
 
