@@ -63,7 +63,11 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
-        image: harbor.4pd.io/hardcore-tech/llm-operator:0.2
+        # 'controller' is the placeholder. The real image comes from the `images:` transformer in
+        # ./kustomization.yaml, which matches on this name — `make build-installer` and `make deploy` set it from ${IMG}.
+        # Hardcoding a real image here breaks that match and silently pins whatever is written previously.
+        # ':latest' was nothing about the trick.
+        image: controller:latest
         name: manager
         ports:
         - containerPort: 8081
