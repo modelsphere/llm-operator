@@ -204,6 +204,10 @@ scaler:
     # a brief metric dip doesn't cause flapping (scale-up stays immediate).
     # 0 disables it (keeps the metricsMock demo snappy); set e.g. 300 in prod.
     stabilizationWindowSeconds: 0
+    # Cap on how many replicas one scale-down step removes, so the fleet walks
+    # down instead of bursting from N to minReplicas. 0 disables the cap (keeps
+    # the metricsMock demo snappy); set e.g. 1 in prod.
+    maxStepReplicas: 0
     deletionCostQuery: ""
     # Example (scoped to this deployment via __SCOPE__). SGLang's KV-cache
     # equivalent of vllm:kv_cache_usage_perc is sglang:token_usage:

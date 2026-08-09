@@ -224,6 +224,188 @@ var _ = Describe("LLMScaler Controller", func() {
 			// desired = ceil(5 * 0/5) = 0, clamped up to minReplicas (1).
 			Expect(*deploy.Spec.Replicas).To(Equal(int32(1)))
 		})
+
+		// unsettledAtFive puts the Deployment at 5 replicas, fully rolled out (so the
+		// rollout guard doesn't fire and mask the settle guard), with the given
+		// readyReplicas and terminatingReplicas, and an idle metric.
+		unsettledAtFive := func(ready int32, terminating *int32) *appsv1.Deployment {
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: targetDeployName, Namespace: scalerNamespace}, deploy)).To(Succeed())
+			var five int32 = 5
+			deploy.Spec.Replicas = &five
+			Expect(k8sClient.Update(ctx, deploy)).To(Succeed())
+			deploy.Status.ObservedGeneration = deploy.Generation
+			deploy.Status.Replicas = five
+			deploy.Status.UpdatedReplicas = five
+			deploy.Status.ReadyReplicas = ready
+			deploy.Status.TerminatingReplicas = terminating
+			Expect(k8sClient.Status().Update(ctx, deploy)).To(Succeed())
+
+			mockValue = "0" // empty queue -> wants minReplicas
+			return deploy
+		}
+
+		replicasNow := func() int32 {
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: targetDeployName, Namespace: scalerNamespace}, deploy)).To(Succeed())
+			return *deploy.Spec.Replicas
+		}
+
+		It("should defer a scale-down until readyReplicas is back at specReplicas", func() {
+			By("setting the Deployment to 5 replicas with only 3 ready")
+			unsettledAtFive(3, nil)
+
+			controllerReconciler := &LLMScalerReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("checking the scale-down was deferred")
+			Expect(replicasNow()).To(Equal(int32(5)))
+
+			By("letting the fleet converge")
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: targetDeployName, Namespace: scalerNamespace}, deploy)).To(Succeed())
+			deploy.Status.ReadyReplicas = 5
+			Expect(k8sClient.Status().Update(ctx, deploy)).To(Succeed())
+
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("checking the scale-down now proceeds")
+			Expect(replicasNow()).To(Equal(int32(1)))
+		})
+
+		It("should ignore still-draining pods while checkTerminatingReplicas is off", func() {
+			// Current production behavior. readyReplicas excludes terminating pods,
+			// so the fleet reads as settled the moment the previous step's pods are
+			// marked for deletion — the descent is paced by syncPeriodSeconds, not
+			// by the drain.
+			Expect(checkTerminatingReplicas).To(BeFalse(), "this spec pins the gated-off behavior")
+
+			By("setting 5 ready with 2 still draining")
+			two := int32(2)
+			unsettledAtFive(5, &two)
+
+			controllerReconciler := &LLMScalerReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("checking the scale-down was not held back by the drain")
+			Expect(replicasNow()).To(Equal(int32(1)))
+		})
+
+		It("should also wait for the drain when checkTerminatingReplicas is on", func() {
+			checkTerminatingReplicas = true
+			DeferCleanup(func() { checkTerminatingReplicas = false })
+
+			By("setting 5 ready with 2 still draining")
+			two := int32(2)
+			unsettledAtFive(5, &two)
+
+			controllerReconciler := &LLMScalerReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("checking it is deferred; readyReplicas alone would have said settled")
+			Expect(replicasNow()).To(Equal(int32(5)))
+
+			By("letting the drain finish")
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: targetDeployName, Namespace: scalerNamespace}, deploy)).To(Succeed())
+			var zero int32 = 0
+			deploy.Status.TerminatingReplicas = &zero
+			Expect(k8sClient.Status().Update(ctx, deploy)).To(Succeed())
+
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("checking the scale-down now proceeds")
+			Expect(replicasNow()).To(Equal(int32(1)))
+		})
+
+		It("should not gate scale-up on the previous scale-down settling", func() {
+			By("setting 3 replicas with 2 ready and 1 still terminating, under load")
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: targetDeployName, Namespace: scalerNamespace}, deploy)).To(Succeed())
+			var three int32 = 3
+			deploy.Spec.Replicas = &three
+			Expect(k8sClient.Update(ctx, deploy)).To(Succeed())
+			deploy.Status.ObservedGeneration = deploy.Generation
+			deploy.Status.Replicas = three
+			deploy.Status.UpdatedReplicas = three
+			deploy.Status.ReadyReplicas = 2
+			terminating := int32(1)
+			deploy.Status.TerminatingReplicas = &terminating
+			Expect(k8sClient.Status().Update(ctx, deploy)).To(Succeed())
+
+			mockValue = "0.85" // over the 0.5 target -> wants more replicas
+
+			controllerReconciler := &LLMScalerReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("checking capacity was added despite the unsettled fleet")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: targetDeployName, Namespace: scalerNamespace}, deploy)).To(Succeed())
+			// ceil(2 * 0.85/0.5) = 4; the settle guard only gates scale-down.
+			Expect(*deploy.Spec.Replicas).To(Equal(int32(4)))
+		})
+
+		It("should walk down one step at a time when maxStepReplicas is set", func() {
+			By("capping the scale-down step at 2 replicas")
+			scaler := &autoscalingv1alpha1.LLMScaler{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, scaler)).To(Succeed())
+			scaler.Spec.ScaleDown.MaxStepReplicas = 2
+			Expect(k8sClient.Update(ctx, scaler)).To(Succeed())
+
+			setReplicas := func(n int32) {
+				deploy := &appsv1.Deployment{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: targetDeployName, Namespace: scalerNamespace}, deploy)).To(Succeed())
+				deploy.Spec.Replicas = &n
+				Expect(k8sClient.Update(ctx, deploy)).To(Succeed())
+				// Fully rolled out at n so the rollout guard doesn't defer.
+				deploy.Status.ObservedGeneration = deploy.Generation
+				deploy.Status.Replicas = n
+				deploy.Status.UpdatedReplicas = n
+				deploy.Status.ReadyReplicas = n
+				deploy.Status.AvailableReplicas = n
+				Expect(k8sClient.Status().Update(ctx, deploy)).To(Succeed())
+			}
+
+			By("setting the Deployment to 5 replicas and the metric to 0 (idle)")
+			setReplicas(5)
+			mockValue = "0" // empty queue
+
+			controllerReconciler := &LLMScalerReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			By("running the Reconciler; raw recommendation is minReplicas but the step is capped")
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: targetDeployName, Namespace: scalerNamespace}, deploy)).To(Succeed())
+			// desired = 1 (clamped to minReplicas), capped to 5 - 2 = 3.
+			Expect(*deploy.Spec.Replicas).To(Equal(int32(3)))
+
+			By("checking status reports the uncapped recommendation, not the step")
+			Expect(k8sClient.Get(ctx, typeNamespacedName, scaler)).To(Succeed())
+			// The cap rate-limits the write; the recommendation is still 1.
+			Expect(scaler.Status.DesiredReplicas).To(Equal(int32(1)))
+
+			By("running the Reconciler again; it takes the next step down")
+			setReplicas(3) // simulate the Deployment controller settling at 3
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: targetDeployName, Namespace: scalerNamespace}, deploy)).To(Succeed())
+			// 3 - 2 = 1, which is minReplicas, so it lands there rather than below.
+			Expect(*deploy.Spec.Replicas).To(Equal(int32(1)))
+		})
 	})
 })
 
@@ -249,5 +431,26 @@ func TestStabilizeDesired(t *testing.T) {
 	// Scale-up is immediate regardless of history.
 	if got := r.stabilizeDesired(key, 9, window, t0.Add(61*time.Second)); got != 9 {
 		t.Fatalf("scale-up: got %d, want 9", got)
+	}
+}
+
+// TestCapScaleDownStep unit-tests the scale-down rate limiter.
+func TestCapScaleDownStep(t *testing.T) {
+	tests := []struct {
+		name                      string
+		current, desired, maxStep int32
+		want                      int32
+	}{
+		{"unlimited when maxStep is 0", 10, 1, 0, 1},
+		{"caps a burst scale-down", 10, 1, 2, 8},
+		{"passes through a step within the cap", 10, 9, 2, 9},
+		{"passes through a step exactly at the cap", 10, 8, 2, 8},
+		{"leaves scale-up untouched", 2, 10, 1, 10},
+		{"leaves a no-op untouched", 5, 5, 1, 5},
+	}
+	for _, tt := range tests {
+		if got := capScaleDownStep(tt.current, tt.desired, tt.maxStep); got != tt.want {
+			t.Errorf("%s: capScaleDownStep(%d, %d, %d) = %d, want %d", tt.name, tt.current, tt.desired, tt.maxStep, got, tt.want)
+		}
 	}
 }

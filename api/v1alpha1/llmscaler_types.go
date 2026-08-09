@@ -58,6 +58,23 @@ type ScaleDownSpec struct {
 	// +optional
 	StabilizationWindowSeconds int32 `json:"stabilizationWindowSeconds,omitempty"`
 
+	// maxStepReplicas caps how many replicas a single scale-down step may remove,
+	// so the fleet shrinks gradually instead of dropping straight from N to
+	// minReplicas when the metric collapses. It bounds the size of a step, not how
+	// often one happens: the next scale-down also waits for the previous one to
+	// settle, so steps are at least syncPeriodSeconds apart and can be further
+	// apart while the target is still converging. A full descent therefore takes
+	// roughly ceil((current-minReplicas)/maxStepReplicas) steps at that spacing —
+	// on a slow-settling workload prefer a larger step. It rate-limits the write
+	// only:
+	// status.desiredReplicas keeps reporting the uncapped recommendation, and
+	// subsequent syncs keep stepping toward it until they meet. Scaling never goes
+	// below minReplicas, and scale-up is unaffected. 0 (default) means unlimited —
+	// scale down straight to the recommendation.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxStepReplicas int32 `json:"maxStepReplicas,omitempty"`
+
 	// behavior controls how pods are chosen when scaling down.
 	// "CacheAware" (default) biases removal toward the coldest-cache pods by
 	// setting a low controller.kubernetes.io/pod-deletion-cost on the pods being

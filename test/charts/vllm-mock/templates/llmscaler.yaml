@@ -41,6 +41,9 @@ spec:
     {{- with .stabilizationWindowSeconds }}
     stabilizationWindowSeconds: {{ . }}
     {{- end }}
+    {{- with .maxStepReplicas }}
+    maxStepReplicas: {{ . }}
+    {{- end }}
     {{- with .deletionCostQuery }}
     deletionCostQuery: {{ . | replace "__SCOPE__" $scope | quote }}
     {{- end }}

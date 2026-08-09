@@ -145,46 +145,30 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	logger.Info("Fetched target resource", "kind", targetRef.Kind, "specReplicas", specReplicas, "readyReplicas", readyReplicas)
 
-	// 3. Fetch metrics and compute the desired replica count (HPA-style, max
-	// across metrics). Use it when at least one metric was evaluated — it may
-	// legitimately be 0 for an idle target (clamped up to minReplicas below).
-	// Only when every metric failed to fetch do we hold current replicas.
-	maxDesiredReplicas, haveMetric := r.computeDesiredFromMetrics(ctx, &scaler, readyReplicas)
+	// 3. Compute the recommendation: metrics, clamped to min/max, damped on the
+	// way down by the stabilization window. This is what we want, independent of
+	// how fast we are allowed to get there.
+	recommendedReplicas := r.recommendReplicas(ctx, &scaler, req.NamespacedName, specReplicas, readyReplicas)
 
-	desiredReplicas := int32(specReplicas)
-	if haveMetric {
-		desiredReplicas = maxDesiredReplicas
+	// 4. Execute Scale Action, rate-limited by maxStepReplicas. The cap belongs
+	// here rather than in the recommendation: it governs how far a single write
+	// may travel toward desiredReplicas, not what the right replica count is. Each
+	// sync moves one step closer, so the fleet converges on the recommendation
+	// over several periods instead of in one burst. Scale-up is never capped.
+	targetReplicas := capScaleDownStep(int32(specReplicas), recommendedReplicas, scaler.Spec.ScaleDown.MaxStepReplicas)
+	if targetReplicas != recommendedReplicas {
+		logger.Info("Scale-down step capped", "recommended", recommendedReplicas, "thisStep", targetReplicas, "maxStepReplicas", scaler.Spec.ScaleDown.MaxStepReplicas)
 	}
 
-	// Ensure desired is within min/max boundaries
-	if desiredReplicas < scaler.Spec.MinReplicas {
-		desiredReplicas = scaler.Spec.MinReplicas
-	}
-	if desiredReplicas > scaler.Spec.MaxReplicas {
-		desiredReplicas = scaler.Spec.MaxReplicas
-	}
+	switch reason := scaleDeferReason(targetObj, targetRef.Kind, specReplicas, readyReplicas, targetReplicas); {
+	case targetReplicas == int32(specReplicas):
+		// Already at the target; nothing to write.
+	case reason != "":
+		logger.Info("Deferring scaling", "reason", reason, "current", specReplicas, "ready", readyReplicas, "target", targetReplicas)
+	default:
+		logger.Info("Scaling target", "from", specReplicas, "to", targetReplicas)
 
-	// Scale-down stabilization: hold at the highest recommendation seen within
-	// the window so a brief metric dip doesn't shrink the fleet. Scale-up stays
-	// immediate, since the current recommendation is then the window's max.
-	if window := time.Duration(scaler.Spec.ScaleDown.StabilizationWindowSeconds) * time.Second; window > 0 {
-		stabilized := r.stabilizeDesired(req.NamespacedName, desiredReplicas, window, time.Now())
-		if stabilized != desiredReplicas {
-			logger.Info("Scale-down stabilized", "raw", desiredReplicas, "stabilized", stabilized, "windowSeconds", scaler.Spec.ScaleDown.StabilizationWindowSeconds)
-		}
-		desiredReplicas = stabilized
-	}
-
-	// 4. Execute Scale Action
-	if desiredReplicas != int32(specReplicas) && targetRef.Kind == deploymentKind && rolloutInProgress(targetObj, specReplicas) {
-		// Defer scaling while a rollout is in progress: new pods start with cold
-		// KV caches that both distort the metric average and would be mis-picked
-		// as scale-down victims. Wait for the rollout to settle, then re-evaluate.
-		logger.Info("Deferring scaling; Deployment rollout in progress", "current", specReplicas, "desired", desiredReplicas)
-	} else if desiredReplicas != int32(specReplicas) {
-		logger.Info("Scaling target", "from", specReplicas, "to", desiredReplicas)
-
-		if desiredReplicas < int32(specReplicas) {
+		if targetReplicas < int32(specReplicas) {
 			// Cache-Aware Scale-Down: bias the ReplicaSet toward removing the
 			// coldest-cache pods by setting a low pod-deletion-cost on exactly
 			// the pods being sacrificed. This runs ONLY here (at shrink time),
@@ -196,7 +180,7 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			// and ignores pod-deletion-cost.
 			behavior := scaler.Spec.ScaleDown.Behavior
 			if (behavior == "" || behavior == "CacheAware") && targetRef.Kind == deploymentKind {
-				numToRemove := int(specReplicas) - int(desiredReplicas)
+				numToRemove := int(specReplicas) - int(targetReplicas)
 				if err := r.markColdestPodsForDeletion(ctx, &scaler, targetObj, numToRemove); err != nil {
 					// Non-fatal: proceed with the scale-down even if hinting failed.
 					logger.Error(err, "Could not set pod-deletion-cost hints; scaling down without them")
@@ -206,7 +190,7 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			}
 		}
 
-		err = unstructured.SetNestedField(targetObj.Object, int64(desiredReplicas), "spec", "replicas")
+		err = unstructured.SetNestedField(targetObj.Object, int64(targetReplicas), "spec", "replicas")
 		if err != nil {
 			logger.Error(err, "failed to set replicas field")
 			return ctrl.Result{}, err
@@ -220,7 +204,7 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// 4. Update Status
 	scaler.Status.CurrentReplicas = int32(readyReplicas)
-	scaler.Status.DesiredReplicas = desiredReplicas
+	scaler.Status.DesiredReplicas = recommendedReplicas
 	if err := r.Status().Update(ctx, &scaler); err != nil {
 		logger.Error(err, "failed to update scaler status")
 		return ctrl.Result{}, err
@@ -238,6 +222,71 @@ func (r *LLMScalerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&autoscalingv1alpha1.LLMScaler{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("llmscaler").
 		Complete(r)
+}
+
+// scaleDeferReason reports why this sync must not write a new replica count, or
+// "" when the scale action may proceed. Both guards exist for the same reason: a
+// target that is still absorbing the last change gives unreliable readings, so
+// acting on them compounds the error.
+func scaleDeferReason(targetObj *unstructured.Unstructured, kind string, specReplicas, readyReplicas int64, targetReplicas int32) string {
+	if kind == deploymentKind && rolloutInProgress(targetObj, specReplicas) {
+		return "Deployment rollout in progress"
+	}
+	if targetReplicas < int32(specReplicas) && !scaleDownSettled(targetObj, specReplicas, readyReplicas) {
+		return "previous scale-down has not settled"
+	}
+	return ""
+}
+
+// checkTerminatingReplicas gates the drain half of the scale-down settle guard
+// (see scaleDownSettled).
+//
+// Off pending production validation. With it on, every step waits out the full
+// preStop drain, so a descent is paced by the pod's shutdown time rather than by
+// syncPeriodSeconds — on a slow-draining model that turns a multi-step descent
+// into tens of minutes of holding idle GPUs. Off, the guard keeps only the
+// readyReplicas condition, which in practice clears about a second after each
+// write (see scaleDownSettled for why), so steps are paced by syncPeriodSeconds.
+//
+// Flip to true to re-enable; both paths are covered by the controller tests.
+var checkTerminatingReplicas = false
+
+// scaleDownSettled reports whether the target has finished absorbing the previous
+// scale-down, so the next step may start. Scale-up is deliberately not gated on
+// this — capacity is added as soon as the metric warrants it.
+//
+// Two conditions, both read off the target's own status:
+//
+//   - readyReplicas == specReplicas — the fleet has converged on the last write.
+//     Also catches the window just after a write, where readyReplicas is still
+//     the old, higher count.
+//   - terminatingReplicas == 0 — no pod is still draining. Only applied when
+//     checkTerminatingReplicas is on.
+//
+// The second is not redundant. Per the apps/v1 API, a Deployment's
+// status.readyReplicas counts "non-terminating pods ... with a Ready Condition",
+// so a pod leaves that count the moment it gets a deletionTimestamp — long before
+// it exits. Under a long preStop drain the readyReplicas check alone reports
+// "settled" while the sacrificed pods are still serving traffic, still scraped
+// into the metric average, and still holding their GPUs. That is the current
+// behavior with the gate off: the guard then only bridges the brief window
+// between our write and the workload controller reflecting it in status.
+//
+// terminatingReplicas is a beta field (enabled by default); on a cluster that does
+// not report it — or on a StatefulSet/LWS target, which has no such field — the
+// check degrades to the readyReplicas condition alone even when gated on.
+func scaleDownSettled(targetObj *unstructured.Unstructured, specReplicas, readyReplicas int64) bool {
+	if readyReplicas != specReplicas {
+		return false
+	}
+	if !checkTerminatingReplicas {
+		return true
+	}
+	terminating, found, err := unstructured.NestedInt64(targetObj.Object, "status", "terminatingReplicas")
+	if err != nil || !found {
+		return true
+	}
+	return terminating == 0
 }
 
 // rolloutInProgress reports whether a Deployment target is mid-rollout: the
@@ -284,11 +333,68 @@ func (r *LLMScalerReconciler) stabilizeDesired(key types.NamespacedName, desired
 
 	stabilized := desired
 	for _, rec := range kept {
-		if rec.desired > stabilized {
-			stabilized = rec.desired
-		}
+		stabilized = max(stabilized, rec.desired)
 	}
 	return stabilized
+}
+
+// recommendReplicas turns the metrics into the replica count this scaler wants:
+// the HPA-style recommendation clamped to [minReplicas, maxReplicas], then damped
+// on the way down by the stabilization window. This is the target, not the next
+// write — the caller rate-limits how fast to approach it (see capScaleDownStep).
+// Stabilization can never lower a scale-up, since it only ever returns the window
+// maximum, but it is still entered on one: it has to record every recommendation,
+// because the peak it later holds at is itself a scale-up.
+func (r *LLMScalerReconciler) recommendReplicas(ctx context.Context, scaler *autoscalingv1alpha1.LLMScaler, key types.NamespacedName, specReplicas, readyReplicas int64) int32 {
+	logger := logf.FromContext(ctx)
+
+	// Use the metric recommendation when at least one metric was evaluated — it
+	// may legitimately be 0 for an idle target (clamped up to minReplicas below).
+	// Only when every metric failed to fetch do we hold current replicas.
+	maxDesiredReplicas, haveMetric := r.computeDesiredFromMetrics(ctx, scaler, readyReplicas)
+
+	desiredReplicas := int32(specReplicas)
+	if haveMetric {
+		desiredReplicas = maxDesiredReplicas
+	}
+
+	// Ensure desired is within min/max boundaries
+	if desiredReplicas < scaler.Spec.MinReplicas {
+		desiredReplicas = scaler.Spec.MinReplicas
+	}
+	if desiredReplicas > scaler.Spec.MaxReplicas {
+		desiredReplicas = scaler.Spec.MaxReplicas
+	}
+
+	// Scale-down stabilization: hold at the highest recommendation seen within
+	// the window so a brief metric dip doesn't shrink the fleet. Scale-up stays
+	// immediate, since the current recommendation is then the window's max.
+	if window := time.Duration(scaler.Spec.ScaleDown.StabilizationWindowSeconds) * time.Second; window > 0 {
+		stabilized := r.stabilizeDesired(key, desiredReplicas, window, time.Now())
+		if stabilized != desiredReplicas {
+			logger.Info("Scale-down stabilized", "raw", desiredReplicas, "stabilized", stabilized, "windowSeconds", scaler.Spec.ScaleDown.StabilizationWindowSeconds)
+		}
+		desiredReplicas = stabilized
+	}
+
+	return desiredReplicas
+}
+
+// capScaleDownStep limits a single scale-down write to maxStep replicas below
+// current, so a collapsed metric shrinks the fleet gradually (maxStep per sync
+// period) instead of jumping from N to minReplicas in one write. It is a rate
+// limit on the write, not on the recommendation: desired stays the target and
+// later syncs keep stepping toward it. desired is returned unchanged when it is
+// not a scale-down or is already within the step, so scale-up is never affected.
+// maxStep <= 0 means unlimited.
+func capScaleDownStep(current, desired, maxStep int32) int32 {
+	if maxStep <= 0 || desired >= current {
+		return desired
+	}
+	if floor := current - maxStep; floor > desired {
+		return floor
+	}
+	return desired
 }
 
 // forgetRecommendations drops the stabilization history for a deleted scaler.

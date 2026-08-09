@@ -146,9 +146,29 @@ spec:
                       for colder / less valuable pods (e.g. "vllm:kv_cache_usage_perc * 100").
                       When empty, a newest-pod-first heuristic is used instead.
                     type: string
+                  maxStepReplicas:
+                    description: |-
+                      maxStepReplicas caps how many replicas a single scale-down step may remove,
+                      so the fleet shrinks gradually instead of dropping straight from N to
+                      minReplicas when the metric collapses. It bounds the size of a step, not how
+                      often one happens: the next scale-down also waits for the previous one to
+                      settle, so steps are at least syncPeriodSeconds apart and can be further
+                      apart while the target is still converging. A full descent therefore takes
+                      roughly ceil((current-minReplicas)/maxStepReplicas) steps at that spacing —
+                      on a slow-settling workload prefer a larger step. It rate-limits the write
+                      only:
+                      status.desiredReplicas keeps reporting the uncapped recommendation, and
+                      subsequent syncs keep stepping toward it until they meet. Scaling never goes
+                      below minReplicas, and scale-up is unaffected. 0 (default) means unlimited —
+                      scale down straight to the recommendation.
+                    format: int32
+                    minimum: 0
+                    type: integer
                   stabilizationWindowSeconds:
-                    description: stabilizationWindowSeconds is reserved for smoothing
-                      scale-down decisions.
+                    description: |-
+                      stabilizationWindowSeconds dampens scale-down: replicas are held at the
+                      highest recommendation seen within this many seconds, so a brief metric dip
+                      doesn't shrink the fleet. Scale-up is immediate. 0 disables stabilization.
                     format: int32
                     type: integer
                 type: object

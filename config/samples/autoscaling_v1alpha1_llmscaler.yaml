@@ -25,5 +25,8 @@ spec:
   scaleDown:
     # Conservative scale-down (fast scale-up stays immediate). Raise for less churn, lower for snappier scale-in.
     stabilizationWindowSeconds: 180
+    # Shed at most 1 replica per syncPeriodSeconds instead of dropping straight
+    # to minReplicas, so warm caches are given up gradually. 0 = unlimited.
+    maxStepReplicas: 1
     behavior: CacheAware
     deletionCostQuery: 'vllm:kv_cache_usage_perc{namespace="default", app="vllm-opt-125m"} * 100'
