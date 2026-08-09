@@ -1,6 +1,6 @@
-# Replicas the Deployment starts with. Once the LLMScaler is running it owns
-# spec.replicas, so this is only the starting point -- the real bounds are
-# scaler.minReplicas / scaler.maxReplicas.
+# Only used when scaler.enabled is false. With the scaler on, the chart omits
+# spec.replicas entirely so the operator can own it (see deployment.yaml), and
+# the starting count comes from scaler.minReplicas instead.
 replicaCount: 1
 
 image:

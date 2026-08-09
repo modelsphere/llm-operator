@@ -26,8 +26,20 @@ metadata:
   labels:
     app: {{ .Release.Name }}-sglang
 spec:
-  # Only the starting value: the LLMScaler owns spec.replicas once it reconciles.
+  {{- if not .Values.scaler.enabled }}
   replicas: {{ .Values.replicaCount }}
+  {{- else }}
+  # replicas is deliberately ABSENT while the LLMScaler is enabled.
+  #
+  # The controller writes spec.replicas on this Deployment, which makes it the
+  # server-side-apply owner of that field (field manager "manager"). If the chart
+  # also declared it, every `helm upgrade` would try to take ownership back and
+  # fail with:
+  #   conflict with "manager" using apps/v1: .spec.replicas
+  # Leaving it out lets the operator own the field outright. The initial replica
+  # count then comes from scaler.minReplicas on the first reconcile, not from
+  # replicaCount.
+  {{- end }}
   selector:
     matchLabels:
       app: {{ .Release.Name }}-sglang
