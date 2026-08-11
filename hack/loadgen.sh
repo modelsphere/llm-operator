@@ -19,10 +19,13 @@
 #   MAX_TOKENS   output tokens per request (<= max-model-len - prompt) (default 512)
 #   PROMPT       prompt text                          (default "whats up")
 #   TIMEOUT      per-request timeout seconds, 0 = none (default 0)
+#   HEADERS      extra request headers, one "Name: value" per line (e.g. auth for
+#                a gateway in front of the server). Only their names are echoed.
 #
 # Examples:
 #   CONCURRENCY=400 DURATION=2m ./hack/loadgen.sh
 #   PROFILE="400:2m,100:3m,0:15m" ./hack/loadgen.sh   # peak, ease off, then idle
+#   HEADERS="Authorization: Bearer $TOKEN" ./hack/loadgen.sh
 #
 set -euo pipefail
 
@@ -34,6 +37,7 @@ PROFILE="${PROFILE:-}"
 MAX_TOKENS="${MAX_TOKENS:-512}"
 PROMPT="${PROMPT:-whats up}"
 TIMEOUT="${TIMEOUT:-0}"
+HEADERS="${HEADERS:-}"
 
 # Repo-local bin (kubebuilder tools dir) for a no-sudo download fallback.
 REPO_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/bin"
@@ -151,6 +155,30 @@ if [ "${#phase_conc[@]}" -eq 0 ]; then
   exit 1
 fi
 
+# One header per line: values legitimately contain commas (Accept), semicolons
+# (Cookie) and colons (Host with a port), so no single-char separator is safe.
+# Headers are appended to the constant hey flags rather than kept in their own
+# array, so the expansion below is never empty — an empty one trips `set -u`.
+hey_args=(-m POST -T "application/json" -t "$TIMEOUT")
+header_names=""
+while IFS= read -r line; do
+  line="$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  [ -n "$line" ] || continue
+  case "$line" in
+    *:*) ;;
+    *)
+      echo "HEADERS: '$line' is not 'Name: value'" >&2
+      exit 1
+      ;;
+  esac
+  hey_args+=(-H "$line")
+  if [ -n "$header_names" ]; then
+    header_names="$header_names, ${line%%:*}"
+  else
+    header_names="${line%%:*}"
+  fi
+done <<< "$HEADERS"
+
 # An all-idle profile drives no traffic, so don't go install a load generator.
 if [ "$needs_hey" -eq 1 ]; then
   ensure_hey
@@ -172,6 +200,11 @@ Driving load:
   max_tokens   $MAX_TOKENS   (per-request timeout: ${TIMEOUT}s; 0 = none)
   phases       ${#phase_conc[@]}, ${total_secs}s total
 EOF
+
+# Names only — values are echoed nowhere, so a token can't leak into a log.
+if [ -n "$header_names" ]; then
+  echo "  headers      $header_names" >&2
+fi
 
 offset=0
 for ((i = 0; i < ${#phase_conc[@]}; i++)); do
@@ -218,9 +251,7 @@ for ((i = 0; i < ${#phase_conc[@]}; i++)); do
   hey \
     -z "$dur" \
     -c "$conc" \
-    -t "$TIMEOUT" \
-    -m POST \
-    -T "application/json" \
+    "${hey_args[@]}" \
     -d "$BODY" \
     "$URL" || rc=$?
   if [ "$rc" -ne 0 ]; then
