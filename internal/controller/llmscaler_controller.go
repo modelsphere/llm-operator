@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net/http"
 	"net/url"
@@ -450,6 +451,20 @@ func (r *LLMScalerReconciler) computeDesiredFromMetrics(ctx context.Context, sca
 			continue
 		}
 
+		// A non-finite sample is a missing measurement, not a zero, and must not
+		// count as a successful evaluation. histogram_quantile over a histogram
+		// with no observations in the window returns NaN — routine for a latency
+		// guardrail whenever that traffic class is idle — and a division by a
+		// zero-valued series returns +Inf. Both convert to a large negative
+		// int32, so they lose the max() below silently while still setting
+		// haveMetric: a NaN guardrail alongside a failing primary metric leaves
+		// maxDesired at 0, which clamps the whole fleet to minReplicas.
+		if math.IsNaN(currentValue) || math.IsInf(currentValue, 0) {
+			logger.Error(fmt.Errorf("query returned %v", currentValue), "ignoring non-finite metric value",
+				"name", metric.Name, "query", metric.Query)
+			continue
+		}
+
 		targetValue, err := parseTargetValue(metric.Target)
 		if err != nil {
 			logger.Error(err, "invalid target value", "target", metric.Target)
@@ -631,16 +646,40 @@ func promInstantQuery(serverAddress, promQL string, headers map[string]string) (
 }
 
 // queryPrometheusScalar runs an instant query expected to return a single
-// (averaged) value and returns the first sample.
+// (aggregated) value.
+//
+// More than one series is an error rather than "take the first". The metrics
+// worth scaling on are all multi-dimensional at the source — per backend, model,
+// route, peer or pod — so an under-aggregated query returns one series per pod
+// and resolving it silently would drive the whole fleet off whichever one
+// Prometheus happened to list first. Failing instead surfaces the missing
+// avg()/sum(), and a metric that fails to evaluate is skipped, not treated as
+// zero (see computeDesiredFromMetrics).
 func queryPrometheusScalar(serverAddress, promQL string, headers map[string]string) (float64, error) {
 	samples, err := promInstantQuery(serverAddress, promQL, headers)
 	if err != nil {
 		return 0, err
 	}
-	if len(samples) == 0 {
+	switch len(samples) {
+	case 1:
+		return samples[0].value, nil
+	case 0:
 		return 0, fmt.Errorf("query returned no data: %s", promQL)
+	default:
+		return 0, fmt.Errorf("query returned %d series, expected 1 — aggregate it (e.g. wrap in avg(...) or sum(...)); first two are %s and %s: %s",
+			len(samples), formatLabels(samples[0].labels), formatLabels(samples[1].labels), promQL)
 	}
-	return samples[0].value, nil
+}
+
+// formatLabels renders a sample's label set as {k="v",...}, sorted by name so
+// the two series quoted in the multi-series error above line up and the
+// dimension that needs aggregating away is the one that visibly differs.
+func formatLabels(labels map[string]string) string {
+	parts := make([]string, 0, len(labels))
+	for _, k := range slices.Sorted(maps.Keys(labels)) {
+		parts = append(parts, fmt.Sprintf("%s=%q", k, labels[k]))
+	}
+	return "{" + strings.Join(parts, ",") + "}"
 }
 
 // queryPodDeletionCosts runs a PromQL instant query that returns per-pod values
@@ -671,12 +710,31 @@ func applyHeaders(req *http.Request, headers map[string]string) {
 	}
 }
 
-// parseTargetValue handles parsing values like "80%" or "5" into a float64
+// parseTargetValue parses a metric target into the finite, positive float64 the
+// scaling ratio divides by.
+//
+// A "%" suffix is rejected rather than interpreted. It used to be stripped and
+// the remainder parsed, so "80%" compared as 80 — against a 0–1 ratio such as
+// vllm:kv_cache_usage_perc that pins the ratio near zero and holds the fleet at
+// minReplicas forever, with nothing in the log to say why. The notation cannot
+// be resolved without knowing the scale of the query it is compared to (0–1
+// fraction or 0–100 percent-valued series), which is why it asks for the
+// absolute value instead of guessing at a factor of 100.
+//
+// Zero, negative and NaN targets are rejected for the same reason the metric
+// value is checked for finiteness: they make the ratio non-finite, which is then
+// discarded silently and reads as a recommendation of zero replicas.
 func parseTargetValue(val string) (float64, error) {
 	val = strings.TrimSpace(val)
-	if before, ok := strings.CutSuffix(val, "%"); ok {
-		numStr := before
-		return strconv.ParseFloat(numStr, 64)
+	if strings.HasSuffix(val, "%") {
+		return 0, fmt.Errorf("target %q: the %% suffix is not supported, use the absolute value the query returns (e.g. \"0.8\" against a 0-1 ratio, \"80\" against a 0-100 series)", val)
 	}
-	return strconv.ParseFloat(val, 64)
+	f, err := strconv.ParseFloat(val, 64)
+	if err != nil {
+		return 0, err
+	}
+	if math.IsNaN(f) || math.IsInf(f, 0) || f <= 0 {
+		return 0, fmt.Errorf("target %q must be a finite positive number", val)
+	}
+	return f, nil
 }

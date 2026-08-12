@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -515,6 +516,135 @@ func TestHoldAfterScaleDown(t *testing.T) {
 	off.holdAfterScaleDown(key, 6, 0, t0)
 	if got := off.stabilizeDesired(key, 1, 0, t0); got != 1 {
 		t.Fatalf("window disabled: got %d, want 1", got)
+	}
+}
+
+// TestParseTargetValue covers the target parser, which is the denominator of the
+// scaling ratio and so must never yield zero, a negative, or a non-finite value.
+func TestParseTargetValue(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      string
+		want    float64
+		wantErr bool
+	}{
+		{"plain integer", "5", 5, false},
+		{"ratio", "0.8", 0.8, false},
+		{"surrounding whitespace", "  2.5 ", 2.5, false},
+		{"percent suffix is rejected, not stripped", "80%", 0, true},
+		{"zero would make the ratio infinite", "0", 0, true},
+		{"negative would invert scaling", "-1", 0, true},
+		{"NaN parses as a float but is not usable", "NaN", 0, true},
+		{"Inf parses as a float but is not usable", "+Inf", 0, true},
+		{"not a number", "abc", 0, true},
+		{"empty", "", 0, true},
+	}
+	for _, tt := range tests {
+		got, err := parseTargetValue(tt.in)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("%s: parseTargetValue(%q) error = %v, wantErr %v", tt.name, tt.in, err, tt.wantErr)
+			continue
+		}
+		if err == nil && got != tt.want {
+			t.Errorf("%s: parseTargetValue(%q) = %v, want %v", tt.name, tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestQueryPrometheusScalar checks how the result vector is resolved: exactly one
+// series is a value, and anything else is an error the caller skips the metric
+// on, rather than a silently-chosen sample or an implied zero.
+func TestQueryPrometheusScalar(t *testing.T) {
+	tests := []struct {
+		name    string
+		result  string
+		want    float64
+		wantErr string
+	}{
+		{
+			name:   "single series resolves",
+			result: `[{"metric":{},"value":[0,"1.5"]}]`,
+			want:   1.5,
+		},
+		{
+			name:    "empty vector is not zero",
+			result:  `[]`,
+			wantErr: "returned no data",
+		},
+		{
+			name: "an under-aggregated query is rejected, naming the series",
+			result: `[{"metric":{"__name__":"m","model":"qwen","backend":"10.0.0.1:8000"},"value":[0,"1"]},
+			          {"metric":{"__name__":"m","model":"qwen","backend":"10.0.0.2:8000"},"value":[0,"9"]}]`,
+			wantErr: `returned 2 series`,
+		},
+	}
+	for _, tt := range tests {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write(fmt.Appendf(nil, `{"status":"success","data":{"result":%s}}`, tt.result))
+		}))
+
+		got, err := queryPrometheusScalar(srv.URL, "some_query", nil)
+		switch {
+		case tt.wantErr == "" && err != nil:
+			t.Errorf("%s: unexpected error: %v", tt.name, err)
+		case tt.wantErr == "" && got != tt.want:
+			t.Errorf("%s: got %v, want %v", tt.name, got, tt.want)
+		case tt.wantErr != "" && err == nil:
+			t.Errorf("%s: expected error containing %q, got value %v", tt.name, tt.wantErr, got)
+		case tt.wantErr != "" && !strings.Contains(err.Error(), tt.wantErr):
+			t.Errorf("%s: error = %q, want it to contain %q", tt.name, err, tt.wantErr)
+		}
+		srv.Close()
+	}
+
+	// The multi-series error has to point at the label to aggregate away, so it
+	// quotes both series with their labels sorted.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"success","data":{"result":[
+			{"metric":{"model":"qwen","backend":"10.0.0.1:8000"},"value":[0,"1"]},
+			{"metric":{"model":"qwen","backend":"10.0.0.2:8000"},"value":[0,"9"]}]}}`))
+	}))
+	defer srv.Close()
+	_, err := queryPrometheusScalar(srv.URL, "some_query", nil)
+	if err == nil {
+		t.Fatal("expected a multi-series error")
+	}
+	for _, want := range []string{`{backend="10.0.0.1:8000",model="qwen"}`, `{backend="10.0.0.2:8000",model="qwen"}`, "avg(...)"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("multi-series error = %q, want it to contain %q", err, want)
+		}
+	}
+}
+
+// TestComputeDesiredFromMetricsNonFinite pins the rule that a NaN or +Inf sample
+// is a failed evaluation, not a zero. Without it haveMetric goes true while
+// maxDesired stays 0, which reads as "scale to minReplicas" — the failure mode a
+// latency guardrail hits routinely, since histogram_quantile over a histogram
+// with no observations in the window returns NaN.
+func TestComputeDesiredFromMetricsNonFinite(t *testing.T) {
+	for _, value := range []string{"NaN", "+Inf", "-Inf"} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write(fmt.Appendf(nil,
+				`{"status":"success","data":{"result":[{"metric":{},"value":[0,"%s"]}]}}`, value))
+		}))
+
+		scaler := &autoscalingv1alpha1.LLMScaler{
+			Spec: autoscalingv1alpha1.LLMScalerSpec{
+				ServerAddress: srv.URL,
+				Metrics: []autoscalingv1alpha1.MetricSpec{
+					{Name: "guardrail", Query: "histogram_quantile(0.95, x)", Target: "2"},
+				},
+			},
+		}
+		r := &LLMScalerReconciler{}
+		desired, haveMetric := r.computeDesiredFromMetrics(context.Background(), scaler, 4)
+		if haveMetric {
+			t.Errorf("value %s: haveMetric = true, want false (a non-finite sample is not a measurement)", value)
+		}
+		if desired != 0 {
+			t.Errorf("value %s: desired = %d, want 0", value, desired)
+		}
+		srv.Close()
 	}
 }
 

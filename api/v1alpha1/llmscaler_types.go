@@ -43,10 +43,18 @@ type MetricSpec struct {
 	// so it should be a per-replica value — e.g. wrap it in avg(...). Bake any
 	// label filters into the query. Example:
 	//   avg(vllm:kv_cache_usage_perc{model_name="opt-125m"})
+	// A result of more than one series is an error, not a sample to pick from:
+	// aggregate away every label the source varies on (backend, model, route,
+	// pod). A query that errors, returns no data, or returns NaN/Inf is skipped
+	// for that sync rather than read as zero; if every metric is skipped the
+	// replica count is held where it is.
 	Query string `json:"query"`
 
 	// target is the desired per-replica value of the query result. When the
-	// measured value exceeds target, replicas scale up proportionally.
+	// measured value exceeds target, replicas scale up proportionally. It must be
+	// a finite positive number on the same scale as the query — a "%" suffix is
+	// rejected, since "80%" cannot be resolved without knowing whether the query
+	// returns a 0-1 fraction (write "0.8") or a 0-100 percentage (write "80").
 	Target string `json:"target"`
 }
 
