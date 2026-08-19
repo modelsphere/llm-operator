@@ -31,6 +31,59 @@ type TargetRef struct {
 	Name       string `json:"name"`
 }
 
+// Metric providers accepted by LLMScalerSpec.MetricProvider.
+const (
+	// MetricProviderPrometheus evaluates spec.metrics as PromQL against
+	// spec.serverAddress. This is the default.
+	MetricProviderPrometheus = "Prometheus"
+
+	// MetricProviderCustom reads a replica recommendation straight off a
+	// decision server; see CustomProviderSpec.
+	MetricProviderCustom = "Custom"
+)
+
+// CustomProviderSpec configures the "Custom" metric provider: an external
+// decision server that replaces Prometheus and hands back a replica count
+// directly, rather than a measurement to divide by a target.
+//
+// spec.serverAddress becomes that server's base URL and spec.serverHeaders are
+// sent with the request, exactly as for Prometheus. The request is
+//
+//	GET {serverAddress}{path}?serviceId={serviceId}
+//
+// and the reply is expected to carry a recognised apiVersion — the schema is
+// keyed off that field, so an unknown one is refused rather than parsed
+// hopefully. Of the payload only decisions[].replicas.active is read, and it is
+// used as the recommendation itself: it is an absolute replica count, not a
+// per-replica value, so readyReplicas plays no part in it. Everything after
+// that is unchanged — the count is clamped to [minReplicas, maxReplicas], damped
+// by scaleDown.stabilizationWindowSeconds, and paced by
+// scaleDown.maxStepReplicas.
+//
+// A request that fails, a reply in an unknown schema, and a reply with no
+// matching decision are all treated the way an unevaluable metric is: that sync
+// is skipped and the replica count is held where it is, never read as zero.
+type CustomProviderSpec struct {
+	// serviceId names the service whose decision to read. It is sent as the
+	// serviceId query parameter and is also matched against
+	// decisions[].serviceId in the reply, since the server is free to answer
+	// with more than it was asked for.
+	ServiceID string `json:"serviceId"`
+
+	// namespace optionally narrows the match to decisions carrying this
+	// namespace, for a server that reports the same serviceId in several. When
+	// empty, serviceId alone selects the decision — and a serviceId matching
+	// more than one decision is an error rather than a choice, so set this if
+	// the server ever reports duplicates.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// path is the request path on serverAddress. Defaults to /decisions.
+	// +kubebuilder:default="/decisions"
+	// +optional
+	Path string `json:"path,omitempty"`
+}
+
 // MetricSpec defines a Prometheus query and the target value to scale on.
 type MetricSpec struct {
 	// name is an optional identifier for this metric, used in logs and events.
@@ -101,7 +154,10 @@ type ScaleDownSpec struct {
 	// carrying a "pod" label; the sample value becomes that pod's deletion cost.
 	// Lower cost is deleted first, so the expression should yield lower numbers
 	// for colder / less valuable pods (e.g. "vllm:kv_cache_usage_perc * 100").
-	// When empty, a newest-pod-first heuristic is used instead.
+	// When empty, a newest-pod-first heuristic is used instead. It is PromQL, so
+	// it is only consulted under the Prometheus metric provider — under Custom,
+	// spec.serverAddress is a decision server with no query API, and the
+	// heuristic is used regardless of what is set here.
 	// +optional
 	DeletionCostQuery string `json:"deletionCostQuery,omitempty"`
 }
@@ -113,16 +169,36 @@ type PreemptionSpec struct {
 }
 
 // LLMScalerSpec defines the desired state of LLMScaler
+// +kubebuilder:validation:XValidation:rule="(has(self.metricProvider) && self.metricProvider == 'Custom') || (has(self.metrics) && size(self.metrics) > 0)",message="spec.metrics must be non-empty unless spec.metricProvider is Custom"
+// +kubebuilder:validation:XValidation:rule="!(has(self.metricProvider) && self.metricProvider == 'Custom') || has(self.customProvider)",message="spec.customProvider is required when spec.metricProvider is Custom"
 type LLMScalerSpec struct {
 	// targetRef points to the resource (e.g., Deployment) to scale
 	TargetRef TargetRef `json:"targetRef"`
 
-	// serverAddress is the Prometheus query endpoint (e.g. http://prometheus:9090)
+	// metricProvider selects where the scaling signal comes from.
+	// "Prometheus" (default) evaluates spec.metrics as PromQL against
+	// spec.serverAddress and derives replicas from them. "Custom" ignores
+	// spec.metrics entirely and reads a replica count straight off the decision
+	// server described by spec.customProvider — the two are alternatives, not
+	// layers, and there is no fallback from one to the other.
+	// +kubebuilder:validation:Enum=Prometheus;Custom
+	// +kubebuilder:default=Prometheus
+	// +optional
+	MetricProvider string `json:"metricProvider,omitempty"`
+
+	// customProvider configures the Custom metric provider. Required when
+	// metricProvider is Custom, ignored otherwise.
+	// +optional
+	CustomProvider *CustomProviderSpec `json:"customProvider,omitempty"`
+
+	// serverAddress is the metric source endpoint: the Prometheus query API
+	// (e.g. http://prometheus:9090) under the Prometheus provider, or the
+	// decision server's base URL (e.g. http://decisions:80) under Custom.
 	ServerAddress string `json:"serverAddress"`
 
 	// serverHeaders are additional HTTP headers sent with every metric-fetch
-	// request to Prometheus (e.g. Authorization for a secured endpoint). Values
-	// are used verbatim.
+	// request to the metric source (e.g. Authorization for a secured endpoint).
+	// Values are used verbatim.
 	// +optional
 	ServerHeaders map[string]string `json:"serverHeaders,omitempty"`
 
@@ -144,8 +220,12 @@ type LLMScalerSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	MaxReplicas int32 `json:"maxReplicas"`
 
-	// metrics contains the specifications for which to use to calculate the desired replica count
-	Metrics []MetricSpec `json:"metrics"`
+	// metrics contains the specifications for which to use to calculate the
+	// desired replica count. Required (and non-empty) under the Prometheus
+	// provider; ignored under Custom, which gets its recommendation from the
+	// decision server instead.
+	// +optional
+	Metrics []MetricSpec `json:"metrics,omitempty"`
 
 	// scaleDown defines the behavior for scaling down, e.g. cache-aware teardown
 	// +optional

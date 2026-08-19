@@ -59,15 +59,59 @@ spec:
           spec:
             description: spec defines the desired state of LLMScaler
             properties:
+              customProvider:
+                description: |-
+                  customProvider configures the Custom metric provider. Required when
+                  metricProvider is Custom, ignored otherwise.
+                properties:
+                  namespace:
+                    description: |-
+                      namespace optionally narrows the match to decisions carrying this
+                      namespace, for a server that reports the same serviceId in several. When
+                      empty, serviceId alone selects the decision — and a serviceId matching
+                      more than one decision is an error rather than a choice, so set this if
+                      the server ever reports duplicates.
+                    type: string
+                  path:
+                    default: /decisions
+                    description: path is the request path on serverAddress. Defaults
+                      to /decisions.
+                    type: string
+                  serviceId:
+                    description: |-
+                      serviceId names the service whose decision to read. It is sent as the
+                      serviceId query parameter and is also matched against
+                      decisions[].serviceId in the reply, since the server is free to answer
+                      with more than it was asked for.
+                    type: string
+                required:
+                - serviceId
+                type: object
               maxReplicas:
                 description: maxReplicas is the upper limit for the number of replicas
                   to which the autoscaler can scale up
                 format: int32
                 minimum: 1
                 type: integer
+              metricProvider:
+                default: Prometheus
+                description: |-
+                  metricProvider selects where the scaling signal comes from.
+                  "Prometheus" (default) evaluates spec.metrics as PromQL against
+                  spec.serverAddress and derives replicas from them. "Custom" ignores
+                  spec.metrics entirely and reads a replica count straight off the decision
+                  server described by spec.customProvider — the two are alternatives, not
+                  layers, and there is no fallback from one to the other.
+                enum:
+                - Prometheus
+                - Custom
+                type: string
               metrics:
-                description: metrics contains the specifications for which to use
-                  to calculate the desired replica count
+                description: |-
+                  metrics contains the specifications for which to use to calculate the
+                  desired replica count. Required (and non-empty) under the Prometheus
+                  provider; ignored under Custom, which gets its recommendation from the
+                  decision server instead.
                 items:
                   description: MetricSpec defines a Prometheus query and the target
                     value to scale on.
@@ -152,7 +196,10 @@ spec:
                       carrying a "pod" label; the sample value becomes that pod's deletion cost.
                       Lower cost is deleted first, so the expression should yield lower numbers
                       for colder / less valuable pods (e.g. "vllm:kv_cache_usage_perc * 100").
-                      When empty, a newest-pod-first heuristic is used instead.
+                      When empty, a newest-pod-first heuristic is used instead. It is PromQL, so
+                      it is only consulted under the Prometheus metric provider — under Custom,
+                      spec.serverAddress is a decision server with no query API, and the
+                      heuristic is used regardless of what is set here.
                     type: string
                   maxStepReplicas:
                     description: |-
@@ -181,16 +228,18 @@ spec:
                     type: integer
                 type: object
               serverAddress:
-                description: serverAddress is the Prometheus query endpoint (e.g.
-                  http://prometheus:9090)
+                description: |-
+                  serverAddress is the metric source endpoint: the Prometheus query API
+                  (e.g. http://prometheus:9090) under the Prometheus provider, or the
+                  decision server's base URL (e.g. http://decisions:80) under Custom.
                 type: string
               serverHeaders:
                 additionalProperties:
                   type: string
                 description: |-
                   serverHeaders are additional HTTP headers sent with every metric-fetch
-                  request to Prometheus (e.g. Authorization for a secured endpoint). Values
-                  are used verbatim.
+                  request to the metric source (e.g. Authorization for a secured endpoint).
+                  Values are used verbatim.
                 type: object
               syncPeriodSeconds:
                 default: 15
@@ -215,11 +264,19 @@ spec:
                 type: object
             required:
             - maxReplicas
-            - metrics
             - minReplicas
             - serverAddress
             - targetRef
             type: object
+            x-kubernetes-validations:
+            - message: spec.metrics must be non-empty unless spec.metricProvider is
+                Custom
+              rule: (has(self.metricProvider) && self.metricProvider == 'Custom')
+                || (has(self.metrics) && size(self.metrics) > 0)
+            - message: spec.customProvider is required when spec.metricProvider is
+                Custom
+              rule: '!(has(self.metricProvider) && self.metricProvider == ''Custom'')
+                || has(self.customProvider)'
           status:
             description: status defines the observed state of LLMScaler
             properties:

@@ -1,0 +1,37 @@
+apiVersion: autoscaling.4pd.io/v1alpha1
+kind: LLMScaler
+metadata:
+  labels:
+    app.kubernetes.io/name: llmscaleoperator
+    app.kubernetes.io/managed-by: kustomize
+  name: llmscaler-custom-provider-sample
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: fallback-modelforge-01
+  # Read the replica count from a decision server instead of deriving it from
+  # PromQL. spec.metrics is not used (and not required) under this provider.
+  metricProvider: Custom
+  serverAddress: "http://llm-decision-server.modelforge.svc:80"
+  customProvider:
+    # GET {serverAddress}{path}?serviceId={serviceId}, then take
+    # decisions[].replicas.active from the decision matching serviceId.
+    serviceId: fallback-modelforge-01
+    # Only needed if the server can report this serviceId under more than one
+    # namespace — a serviceId matching several decisions is an error, not a pick.
+    namespace: modelforge
+    path: /decisions
+  minReplicas: 1
+  maxReplicas: 20
+  syncPeriodSeconds: 15
+  retryPeriodSeconds: 10
+  scaleDown:
+    # The decision server's count is still damped and paced on the way down, so
+    # a decision that drops from 15 to 1 walks the fleet down instead of
+    # throwing away every warm cache at once.
+    stabilizationWindowSeconds: 180
+    maxStepReplicas: 1
+    # deletionCostQuery is PromQL and is ignored under this provider; victim
+    # selection falls back to the newest-pod-first heuristic.
+    behavior: CacheAware

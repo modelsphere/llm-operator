@@ -339,20 +339,33 @@ func (r *LLMScalerReconciler) stabilizeDesired(key types.NamespacedName, desired
 	return stabilized
 }
 
-// recommendReplicas turns the metrics into the replica count this scaler wants:
-// the HPA-style recommendation clamped to [minReplicas, maxReplicas], then damped
-// on the way down by the stabilization window. This is the target, not the next
-// write — the caller rate-limits how fast to approach it (see capScaleDownStep).
-// Stabilization can never lower a scale-up, since it only ever returns the window
-// maximum, but it is still entered on one: it has to record every recommendation,
-// because the peak it later holds at is itself a scale-up.
+// recommendReplicas turns the metric source into the replica count this scaler
+// wants, clamped to [minReplicas, maxReplicas] and damped on the way down by the
+// stabilization window. This is the target, not the next write — the caller
+// rate-limits how fast to approach it (see capScaleDownStep). Stabilization can
+// never lower a scale-up, since it only ever returns the window maximum, but it
+// is still entered on one: it has to record every recommendation, because the
+// peak it later holds at is itself a scale-up.
+//
+// Only the first step differs between providers: Prometheus derives the count
+// from per-replica measurements, Custom is handed the count outright. Both feed
+// the same clamping and damping below, so a scaler behaves identically once the
+// number exists.
 func (r *LLMScalerReconciler) recommendReplicas(ctx context.Context, scaler *autoscalingv1alpha1.LLMScaler, key types.NamespacedName, specReplicas, readyReplicas int64) int32 {
 	logger := logf.FromContext(ctx)
 
 	// Use the metric recommendation when at least one metric was evaluated — it
 	// may legitimately be 0 for an idle target (clamped up to minReplicas below).
 	// Only when every metric failed to fetch do we hold current replicas.
-	maxDesiredReplicas, haveMetric := r.computeDesiredFromMetrics(ctx, scaler, readyReplicas)
+	var (
+		maxDesiredReplicas int32
+		haveMetric         bool
+	)
+	if scaler.Spec.MetricProvider == autoscalingv1alpha1.MetricProviderCustom {
+		maxDesiredReplicas, haveMetric = r.desiredFromCustomProvider(ctx, scaler)
+	} else {
+		maxDesiredReplicas, haveMetric = r.computeDesiredFromMetrics(ctx, scaler, readyReplicas)
+	}
 
 	desiredReplicas := int32(specReplicas)
 	if haveMetric {
@@ -483,6 +496,43 @@ func (r *LLMScalerReconciler) computeDesiredFromMetrics(ctx context.Context, sca
 	return maxDesired, haveMetric
 }
 
+// desiredFromCustomProvider fetches the decision server's replica
+// recommendation for this scaler, and reports whether it could be read.
+//
+// The count is returned as-is. It is an absolute replica count rather than a
+// per-replica measurement, so the readyReplicas ratio that the Prometheus path
+// applies has no meaning here — multiplying by it would compound the server's
+// own decision on every sync. Clamping to min/max and scale-down damping still
+// apply upstream: the CRD bounds are this operator's rail, not the server's.
+//
+// A failure returns false rather than 0, so a decision server that is down or
+// answering in a schema we don't know holds the fleet where it is instead of
+// collapsing it to minReplicas — the same rule the Prometheus path applies to a
+// query that cannot be evaluated.
+func (r *LLMScalerReconciler) desiredFromCustomProvider(ctx context.Context, scaler *autoscalingv1alpha1.LLMScaler) (int32, bool) {
+	logger := logf.FromContext(ctx)
+
+	provider := scaler.Spec.CustomProvider
+	if provider == nil {
+		// Admission rejects this pairing, so reaching it means the CRD schema in
+		// the cluster predates the validation rule.
+		logger.Error(fmt.Errorf("spec.customProvider is not set"),
+			"Could not query the custom metric provider", "metricProvider", scaler.Spec.MetricProvider)
+		return 0, false
+	}
+
+	replicas, err := queryDecisionReplicas(scaler.Spec.ServerAddress, provider.Path,
+		provider.ServiceID, provider.Namespace, scaler.Spec.ServerHeaders)
+	if err != nil {
+		logger.Error(err, "Failed to fetch a decision from the custom metric provider",
+			"serverAddress", scaler.Spec.ServerAddress, "serviceId", provider.ServiceID)
+		return 0, false
+	}
+
+	logger.Info("Custom provider decision", "serviceId", provider.ServiceID, "activeReplicas", replicas)
+	return replicas, true
+}
+
 // markColdestPodsForDeletion biases the ReplicaSet toward removing the
 // coldest / least-valuable pods on scale-down. If scaleDown.deletionCostQuery is
 // set (and the source is Prometheus), each pod's pod-deletion-cost is computed
@@ -494,6 +544,7 @@ func (r *LLMScalerReconciler) markColdestPodsForDeletion(ctx context.Context, sc
 	if numToRemove <= 0 {
 		return nil
 	}
+	logger := logf.FromContext(ctx)
 
 	// Locate the target's pods via its label selector.
 	sel, found, err := unstructured.NestedStringMap(targetObj.Object, "spec", "selector", "matchLabels")
@@ -508,12 +559,19 @@ func (r *LLMScalerReconciler) markColdestPodsForDeletion(ctx context.Context, sc
 
 	// Query-based costs take precedence when configured against a Prometheus
 	// source; each matched pod's cost is set from the expression's per-pod value.
+	// The query is PromQL, so under the Custom metric provider there is nothing
+	// to run it against — serverAddress is a decision server that answers with
+	// replica counts, not a query API — and the heuristic below takes over.
 	if q := scaler.Spec.ScaleDown.DeletionCostQuery; q != "" {
-		costs, err := queryPodDeletionCosts(scaler.Spec.ServerAddress, q, scaler.Spec.ServerHeaders)
-		if err != nil {
-			return fmt.Errorf("deletion-cost query failed: %w", err)
+		if scaler.Spec.MetricProvider == autoscalingv1alpha1.MetricProviderCustom {
+			logger.Info("Ignoring scaleDown.deletionCostQuery: it is PromQL and metricProvider is Custom, so using the newest-pod-first heuristic instead")
+		} else {
+			costs, err := queryPodDeletionCosts(scaler.Spec.ServerAddress, q, scaler.Spec.ServerHeaders)
+			if err != nil {
+				return fmt.Errorf("deletion-cost query failed: %w", err)
+			}
+			return r.applyPodDeletionCosts(ctx, pods.Items, costs)
 		}
-		return r.applyPodDeletionCosts(ctx, pods.Items, costs)
 	}
 
 	// Heuristic fallback: newer pods have colder KV caches, so order by
@@ -522,7 +580,6 @@ func (r *LLMScalerReconciler) markColdestPodsForDeletion(ctx context.Context, sc
 		return b.CreationTimestamp.Compare(a.CreationTimestamp.Time)
 	})
 
-	logger := logf.FromContext(ctx)
 	numToRemove = min(numToRemove, len(pods.Items))
 	for i := range numToRemove {
 		pod := &pods.Items[i]

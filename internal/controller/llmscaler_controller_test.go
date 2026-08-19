@@ -36,6 +36,16 @@ import (
 	autoscalingv1alpha1 "gitlab.4pd.io/inference-production-stack/llm-operator/api/v1alpha1"
 )
 
+// Literals shared across the fixtures in this package's tests.
+const (
+	appLabelKey  = "app"
+	fixtureImage = "nginx"
+
+	// decisionNamespace is the namespace the fake decision server reports in
+	// its decisions.
+	decisionNamespace = "modelforge"
+)
+
 var _ = Describe("LLMScaler Controller", func() {
 	Context("When reconciling a resource", func() {
 		const (
@@ -74,17 +84,17 @@ var _ = Describe("LLMScaler Controller", func() {
 				Spec: appsv1.DeploymentSpec{
 					Replicas: &replicas,
 					Selector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{"app": "test"},
+						MatchLabels: map[string]string{appLabelKey: "test"},
 					},
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
-							Labels: map[string]string{"app": "test"},
+							Labels: map[string]string{appLabelKey: "test"},
 						},
 						Spec: corev1.PodSpec{
 							Containers: []corev1.Container{
 								{
-									Name:  "nginx",
-									Image: "nginx",
+									Name:  fixtureImage,
+									Image: fixtureImage,
 								},
 							},
 						},
@@ -443,6 +453,195 @@ var _ = Describe("LLMScaler Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: targetDeployName, Namespace: scalerNamespace}, deploy)).To(Succeed())
 			// 3 - 2 = 1, which is minReplicas, so it lands there rather than below.
 			Expect(*deploy.Spec.Replicas).To(Equal(int32(1)))
+		})
+	})
+
+	// These run against the envtest apiserver so the CRD's own union rules are
+	// exercised, not just the controller's reading of a well-formed spec.
+	Context("When the metric provider is Custom", func() {
+		const (
+			scalerName       = "custom-provider-scaler"
+			scalerNamespace  = "default"
+			targetDeployName = "custom-provider-deployment"
+			serviceID        = sampleServiceID
+		)
+
+		ctx := context.Background()
+
+		typeNamespacedName := types.NamespacedName{Name: scalerName, Namespace: scalerNamespace}
+
+		var mockServer *httptest.Server
+		// mockActive is the replicas.active count the fake decision server
+		// reports; tests set it before reconciling.
+		var mockActive string
+
+		// newScaler builds a Custom-provider scaler that tests mutate before
+		// creating, so each one can probe a different corner of the union rules.
+		newScaler := func() *autoscalingv1alpha1.LLMScaler {
+			return &autoscalingv1alpha1.LLMScaler{
+				ObjectMeta: metav1.ObjectMeta{Name: scalerName, Namespace: scalerNamespace},
+				Spec: autoscalingv1alpha1.LLMScalerSpec{
+					TargetRef: autoscalingv1alpha1.TargetRef{
+						APIVersion: "apps/v1",
+						Kind:       deploymentKind,
+						Name:       targetDeployName,
+					},
+					MetricProvider: autoscalingv1alpha1.MetricProviderCustom,
+					CustomProvider: &autoscalingv1alpha1.CustomProviderSpec{
+						ServiceID: serviceID,
+						Namespace: decisionNamespace,
+					},
+					ServerAddress: mockServer.URL,
+					MinReplicas:   1,
+					MaxReplicas:   5,
+				},
+			}
+		}
+
+		BeforeEach(func() {
+			mockActive = "4"
+			mockServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				Expect(r.URL.Path).To(Equal(defaultDecisionsPath))
+				Expect(r.URL.Query().Get("serviceId")).To(Equal(serviceID))
+				_, _ = w.Write(fmt.Appendf(nil,
+					`{"apiVersion":%q,"decisions":[{"namespace":%q,"serviceId":%q,"replicas":{"active":%s}}]}`,
+					decisionsAPIVersion, decisionNamespace, serviceID, mockActive))
+			}))
+
+			By("creating a dummy Deployment to act as the target")
+			var replicas int32 = 1
+			deploy := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Name: targetDeployName, Namespace: scalerNamespace},
+				Spec: appsv1.DeploymentSpec{
+					Replicas: &replicas,
+					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{appLabelKey: "custom"}},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{appLabelKey: "custom"}},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{Name: fixtureImage, Image: fixtureImage}},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, deploy)).To(Succeed())
+
+			// envtest runs no Deployment controller, so populate status to look
+			// fully rolled out; otherwise the rollout guard defers scaling.
+			deploy.Status.ObservedGeneration = deploy.Generation
+			deploy.Status.Replicas = replicas
+			deploy.Status.UpdatedReplicas = replicas
+			deploy.Status.ReadyReplicas = replicas
+			deploy.Status.AvailableReplicas = replicas
+			Expect(k8sClient.Status().Update(ctx, deploy)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			if mockServer != nil {
+				mockServer.Close()
+			}
+
+			By("Cleanup the LLMScaler")
+			scaler := &autoscalingv1alpha1.LLMScaler{}
+			_ = k8sClient.Get(ctx, typeNamespacedName, scaler)
+			_ = k8sClient.Delete(ctx, scaler)
+
+			By("Cleanup the Deployment")
+			deploy := &appsv1.Deployment{}
+			_ = k8sClient.Get(ctx, types.NamespacedName{Name: targetDeployName, Namespace: scalerNamespace}, deploy)
+			_ = k8sClient.Delete(ctx, deploy)
+		})
+
+		It("should scale the Deployment to the count the decision server reports", func() {
+			By("creating an LLMScaler with no metrics at all")
+			// spec.metrics is required only under the Prometheus provider, so a
+			// Custom scaler must be accepted without it.
+			Expect(k8sClient.Create(ctx, newScaler())).To(Succeed())
+
+			By("running the Reconciler")
+			controllerReconciler := &LLMScalerReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("checking the Deployment landed on the decision, not on a ratio of it")
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: targetDeployName, Namespace: scalerNamespace}, deploy)).To(Succeed())
+			// active: 4 is an absolute count, so 1 ready replica scales straight
+			// to 4 rather than through the per-replica HPA ratio.
+			Expect(*deploy.Spec.Replicas).To(Equal(int32(4)))
+
+			By("checking the status reports the same recommendation")
+			scaler := &autoscalingv1alpha1.LLMScaler{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, scaler)).To(Succeed())
+			Expect(scaler.Status.DesiredReplicas).To(Equal(int32(4)))
+		})
+
+		It("should hold replicas when the decision server is unreachable", func() {
+			Expect(k8sClient.Create(ctx, newScaler())).To(Succeed())
+
+			By("putting the Deployment at 3 replicas, above minReplicas")
+			// Above minReplicas on purpose: at 1 replica "held" and "collapsed to
+			// minReplicas" are the same number, so the test would pass either way.
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: targetDeployName, Namespace: scalerNamespace}, deploy)).To(Succeed())
+			var three int32 = 3
+			deploy.Spec.Replicas = &three
+			Expect(k8sClient.Update(ctx, deploy)).To(Succeed())
+			deploy.Status.ObservedGeneration = deploy.Generation
+			deploy.Status.Replicas = three
+			deploy.Status.UpdatedReplicas = three
+			deploy.Status.ReadyReplicas = three
+			deploy.Status.AvailableReplicas = three
+			Expect(k8sClient.Status().Update(ctx, deploy)).To(Succeed())
+
+			By("taking the decision server down")
+			mockServer.Close()
+
+			By("running the Reconciler")
+			controllerReconciler := &LLMScalerReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("checking the Deployment was left where it was, not collapsed to minReplicas")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: targetDeployName, Namespace: scalerNamespace}, deploy)).To(Succeed())
+			Expect(*deploy.Spec.Replicas).To(Equal(three))
+		})
+
+		It("should reject a Custom scaler with no customProvider", func() {
+			scaler := newScaler()
+			scaler.Spec.CustomProvider = nil
+			err := k8sClient.Create(ctx, scaler)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("spec.customProvider is required"))
+		})
+
+		It("should reject a Prometheus scaler with no metrics", func() {
+			scaler := newScaler()
+			scaler.Spec.MetricProvider = autoscalingv1alpha1.MetricProviderPrometheus
+			scaler.Spec.CustomProvider = nil
+			err := k8sClient.Create(ctx, scaler)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("spec.metrics must be non-empty"))
+		})
+
+		It("should default metricProvider to Prometheus and customProvider.path to /decisions", func() {
+			By("creating a scaler that leaves both unset")
+			scaler := newScaler()
+			scaler.Spec.MetricProvider = ""
+			scaler.Spec.CustomProvider = nil
+			scaler.Spec.Metrics = []autoscalingv1alpha1.MetricSpec{{Query: "avg(x)", Target: "1"}}
+			Expect(k8sClient.Create(ctx, scaler)).To(Succeed())
+
+			stored := &autoscalingv1alpha1.LLMScaler{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, stored)).To(Succeed())
+			Expect(stored.Spec.MetricProvider).To(Equal(autoscalingv1alpha1.MetricProviderPrometheus))
+
+			By("switching it to the Custom provider without naming a path")
+			stored.Spec.MetricProvider = autoscalingv1alpha1.MetricProviderCustom
+			stored.Spec.CustomProvider = &autoscalingv1alpha1.CustomProviderSpec{ServiceID: serviceID}
+			Expect(k8sClient.Update(ctx, stored)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, typeNamespacedName, stored)).To(Succeed())
+			Expect(stored.Spec.CustomProvider.Path).To(Equal(defaultDecisionsPath))
 		})
 	})
 })
