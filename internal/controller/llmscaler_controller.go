@@ -156,7 +156,7 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// may travel toward desiredReplicas, not what the right replica count is. Each
 	// sync moves one step closer, so the fleet converges on the recommendation
 	// over several periods instead of in one burst. Scale-up is never capped.
-	targetReplicas := capScaleDownStep(int32(specReplicas), recommendedReplicas, scaler.Spec.ScaleDown.MaxStepReplicas)
+	targetReplicas := scaleGuard(int32(specReplicas), recommendedReplicas, scaler.Spec.ScaleDown.MaxStepReplicas)
 	if targetReplicas != recommendedReplicas {
 		logger.Info("Scale-down step capped", "recommended", recommendedReplicas, "thisStep", targetReplicas, "maxStepReplicas", scaler.Spec.ScaleDown.MaxStepReplicas)
 	}
@@ -342,7 +342,7 @@ func (r *LLMScalerReconciler) stabilizeDesired(key types.NamespacedName, desired
 // recommendReplicas turns the metric source into the replica count this scaler
 // wants, clamped to [minReplicas, maxReplicas] and damped on the way down by the
 // stabilization window. This is the target, not the next write — the caller
-// rate-limits how fast to approach it (see capScaleDownStep). Stabilization can
+// rate-limits how fast to approach it . Stabilization can
 // never lower a scale-up, since it only ever returns the window maximum, but it
 // is still entered on one: it has to record every recommendation, because the
 // peak it later holds at is itself a scale-up.
@@ -394,14 +394,14 @@ func (r *LLMScalerReconciler) recommendReplicas(ctx context.Context, scaler *aut
 	return desiredReplicas
 }
 
-// capScaleDownStep limits a single scale-down write to maxStep replicas below
+// scaleGuard limits a single scale-down write to maxStep replicas below
 // current, so a collapsed metric shrinks the fleet gradually (maxStep per sync
 // period) instead of jumping from N to minReplicas in one write. It is a rate
 // limit on the write, not on the recommendation: desired stays the target and
 // later syncs keep stepping toward it. desired is returned unchanged when it is
 // not a scale-down or is already within the step, so scale-up is never affected.
 // maxStep <= 0 means unlimited.
-func capScaleDownStep(current, desired, maxStep int32) int32 {
+func scaleGuard(current, desired, maxStep int32) int32 {
 	if maxStep <= 0 || desired >= current {
 		return desired
 	}
@@ -529,7 +529,7 @@ func (r *LLMScalerReconciler) desiredFromCustomProvider(ctx context.Context, sca
 		return 0, false
 	}
 
-	logger.Info("Custom provider decision", "serviceId", provider.ServiceID, "activeReplicas", replicas)
+	logger.Info("Custom provider decision", "serviceId", provider.ServiceID, "calculatedDesired", replicas)
 	return replicas, true
 }
 

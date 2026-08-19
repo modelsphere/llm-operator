@@ -1,5 +1,5 @@
 # Image URL to use all building/pushing image targets
-IMG ?= harbor.4pd.io/hardcore-tech/llm-operator:0.3.0
+IMG ?= harbor.4pd.io/hardcore-tech/llm-operator:0.3.1
 export IMG
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)

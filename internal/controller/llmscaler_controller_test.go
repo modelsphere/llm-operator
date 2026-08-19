@@ -847,8 +847,8 @@ func TestComputeDesiredFromMetricsNonFinite(t *testing.T) {
 	}
 }
 
-// TestCapScaleDownStep unit-tests the scale-down rate limiter.
-func TestCapScaleDownStep(t *testing.T) {
+// TestScaleGuard unit-tests the scale-down rate limiter.
+func TestScaleGuard(t *testing.T) {
 	tests := []struct {
 		name                      string
 		current, desired, maxStep int32
@@ -862,8 +862,8 @@ func TestCapScaleDownStep(t *testing.T) {
 		{"leaves a no-op untouched", 5, 5, 1, 5},
 	}
 	for _, tt := range tests {
-		if got := capScaleDownStep(tt.current, tt.desired, tt.maxStep); got != tt.want {
-			t.Errorf("%s: capScaleDownStep(%d, %d, %d) = %d, want %d", tt.name, tt.current, tt.desired, tt.maxStep, got, tt.want)
+		if got := scaleGuard(tt.current, tt.desired, tt.maxStep); got != tt.want {
+			t.Errorf("%s: scaleGuard(%d, %d, %d) = %d, want %d", tt.name, tt.current, tt.desired, tt.maxStep, got, tt.want)
 		}
 	}
 }
