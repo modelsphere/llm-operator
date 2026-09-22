@@ -14,8 +14,8 @@
 replicaCount: 1
 
 image:
-  # harbor.4pd.io/hardcore-tech/sglang:v0.5.15-cu129
-  repository: "harbor.4pd.io/hardcore-tech/sglang"
+  # Upstream image; the internal build is harbor.4pd.io/hardcore-tech/sglang:v0.5.15-cu129
+  repository: "lmsysorg/sglang"
   tag: "v0.5.15-cu129"
 
 model:

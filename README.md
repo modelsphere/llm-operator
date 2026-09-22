@@ -6,6 +6,46 @@ rather than CPU/memory. Think of it as an HPA specialized for token-serving.
 
 ![arch](./architecture.svg)
 
+## Images and releases
+
+| | |
+| --- | --- |
+| Public image | `4pdosc/llm-operator` (Docker Hub) — the default everywhere in this repo |
+| Internal image | `harbor.4pd.io/hardcore-tech/llm-operator` — same build, internal registry |
+
+Both are built from the same `Dockerfile`; only the base-image build args and the
+destination registry differ. Tagging `vX.Y.Z` publishes both:
+`.github/workflows/release.yml` pushes to Docker Hub, `.gitlab-ci.yml` to harbor.
+
+Both pipelines refuse a tag that does not match `appVersion` in
+`dist/chart/Chart.yaml`. The chart leaves `manager.image.tag` empty so it follows
+`appVersion`; a tag that disagrees would publish one build and install another.
+
+To run the internal image instead of the public one:
+
+```bash
+# Helm
+helm install llmscaleoperator ./dist/chart \
+  --set manager.image.repository=harbor.4pd.io/hardcore-tech/llm-operator
+
+# Makefile targets
+make deploy IMG=harbor.4pd.io/hardcore-tech/llm-operator:0.3.2
+```
+
+The Dockerfile's two base images are build args, defaulting to the public
+`golang` and `gcr.io/distroless/static`. Point them at a mirror where those
+registries are unreachable:
+
+```bash
+docker build \
+  --build-arg GO_IMAGE=<mirror>/golang:1.26 \
+  --build-arg RUNTIME_IMAGE=<mirror>/distroless-static:nonroot .
+```
+
+The internal CI passes `harbor.4pd.io/hardcore-tech/golang:1.26` and
+`harbor.4pd.io/hardcore-tech/distroless-static:nonroot`, mirrored there because
+its runner has no route to docker.io or gcr.io.
+
 ## Description
 
 The operator introduces a single CRD, **`LLMScaler`** (`autoscaling.4pd.io`), that points at a scalable workload and drives its replica count from a metrics source.

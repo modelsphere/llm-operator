@@ -35,8 +35,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	autoscalingv1alpha1 "gitlab.4pd.io/inference-production-stack/llm-operator/api/v1alpha1"
-	"gitlab.4pd.io/inference-production-stack/llm-operator/internal/controller"
+	autoscalingv1alpha1 "github.com/modelsphere/llm-operator/api/v1alpha1"
+	"github.com/modelsphere/llm-operator/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
 

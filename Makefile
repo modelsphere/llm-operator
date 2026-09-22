@@ -1,5 +1,9 @@
-# Image URL to use all building/pushing image targets
-IMG ?= harbor.4pd.io/hardcore-tech/llm-operator:0.3.1
+# Image URL to use all building/pushing image targets.
+# Defaults to the public image on Docker Hub so a clone builds and runs without
+# access to any internal registry. Point it at the internal one when building
+# for production:
+#   make docker-build docker-push IMG=harbor.4pd.io/hardcore-tech/llm-operator:0.3.2
+IMG ?= 4pdosc/llm-operator:0.3.2
 export IMG
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)
@@ -157,6 +161,14 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross .
 	- $(CONTAINER_TOOL) buildx rm llmscaleoperator-builder
 	rm Dockerfile.cross
+
+.PHONY: chart-sync
+chart-sync: manifests ## Propagate the generated CRD and RBAC into dist/chart.
+	./hack/chart-sync.sh
+
+.PHONY: chart-check
+chart-check: manifests ## Fail if dist/chart has fallen behind config/.
+	./hack/chart-sync.sh --check
 
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
