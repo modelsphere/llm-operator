@@ -37,12 +37,27 @@ jobs:
           set -eu
           version="${GITHUB_REF_NAME#v}"
           appversion=$(sed -n 's/^appVersion: *"\{0,1\}\([^"]*\)"\{0,1\}/\1/p' dist/chart/Chart.yaml)
-          if [ "$version" != "$appversion" ]; then
+          # A prerelease (0.3.2-rc1) is a candidate for the release it names, so
+          # the gate compares the version core and ignores the suffix --
+          # otherwise the only way to rehearse this workflow is to cut the real
+          # release. Matches the same gate in .gitlab-ci.yml.
+          if [ "${version%%-*}" != "$appversion" ]; then
             echo "tag ${GITHUB_REF_NAME} != chart appVersion ${appversion}"
             echo "bump dist/chart/Chart.yaml before tagging"
             exit 1
           fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
+          # latest is what someone gets when they ask for no version in
+          # particular, so a candidate must never take it.
+          {
+            echo "tags<<TAGS_EOF"
+            echo "${IMAGE}:${version}"
+            case "$version" in
+              *-*) echo "prerelease ${version}: not tagging latest" >&2 ;;
+              *)   echo "${IMAGE}:latest" ;;
+            esac
+            echo "TAGS_EOF"
+          } >> "$GITHUB_OUTPUT"
         id: version
 
       - name: Set up QEMU
@@ -63,6 +78,4 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
-            ${{ env.IMAGE }}:latest
+          tags: ${{ steps.version.outputs.tags }}
