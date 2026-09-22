@@ -33,7 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	autoscalingv1alpha1 "gitlab.4pd.io/inference-production-stack/llm-operator/api/v1alpha1"
+	autoscalingv1alpha1 "github.com/modelsphere/llm-operator/api/v1alpha1"
 )
 
 // Literals shared across the fixtures in this package's tests.

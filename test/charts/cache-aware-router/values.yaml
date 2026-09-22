@@ -1,5 +1,5 @@
 image:
-  repository: harbor.4pd.io/hardcore-tech/cache_aware_router
+  repository: 4pdosc/cache_aware_router
   tag: "v0.6.0"
   pullPolicy: IfNotPresent
 

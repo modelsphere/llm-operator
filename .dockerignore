@@ -1,14 +1,20 @@
-# More info: https://docs.docker.com/engine/reference/builder/#dockerignore-file
-# Ignore everything by default and re-include only needed files
-**
-
-# Re-include Go source files (but not *_test.go)
-!**/*.go
-**/*_test.go
-
-# Re-include Go module files
-!go.mod
-!go.sum
-
-# Re-include vendor directory
-!vendor/
+# Deny-list on purpose.
+#
+# This used to be an allow-list -- `**` to drop everything, then `!**/*.go` to
+# bring the sources back. That only works under BuildKit. The classic builder
+# does not descend into a directory it has already excluded, so the re-include
+# never reaches cmd/main.go, and the build fails with the unhelpful
+# "package cmd/main.go is not in std" -- go's way of saying the file is absent.
+# Verified by building this context with DOCKER_BUILDKIT=0: go.mod arrived and
+# nothing else. The internal pipeline runs the classic builder deliberately, so
+# the ignore file has to work for both.
+.git
+.github
+.devcontainer
+.githooks
+bin
+dist
+docs
+test
+*.md
+*.svg

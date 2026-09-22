@@ -43,7 +43,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	autoscalingv1alpha1 "gitlab.4pd.io/inference-production-stack/llm-operator/api/v1alpha1"
+	autoscalingv1alpha1 "github.com/modelsphere/llm-operator/api/v1alpha1"
 )
 
 const (

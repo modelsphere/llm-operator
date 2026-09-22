@@ -30,7 +30,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"gitlab.4pd.io/inference-production-stack/llm-operator/test/utils"
+	"github.com/modelsphere/llm-operator/test/utils"
 )
 
 // namespace where the project is deployed in

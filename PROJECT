@@ -11,7 +11,7 @@ plugins:
     manifests: dist/install.yaml
     output: dist
 projectName: llmscaleoperator
-repo: gitlab.4pd.io/inference-production-stack/llm-operator
+repo: github.com/modelsphere/llm-operator
 resources:
 - api:
     crdVersion: v1
@@ -20,6 +20,6 @@ resources:
   domain: 4pd.io
   group: autoscaling
   kind: LLMScaler
-  path: gitlab.4pd.io/inference-production-stack/llm-operator/api/v1alpha1
+  path: github.com/modelsphere/llm-operator/api/v1alpha1
   version: v1alpha1
 version: "3"

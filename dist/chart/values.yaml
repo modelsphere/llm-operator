@@ -16,10 +16,14 @@ manager:
   replicas: 1
 
   image:
-    repository: harbor.4pd.io/hardcore-tech/llm-operator
-    ## Image tag (defaults to Chart.appVersion if not set)
+    ## Public image. For an internal deployment, override with
+    ## harbor.4pd.io/hardcore-tech/llm-operator.
+    repository: 4pdosc/llm-operator
+    ## Image tag. Left empty on purpose so it follows Chart.appVersion --
+    ## a pinned tag here silently outranks appVersion and ships an older image
+    ## than the chart claims to install.
     ##
-    tag: "0.2.2"
+    tag: ""
     pullPolicy: IfNotPresent
 
   ## Arguments

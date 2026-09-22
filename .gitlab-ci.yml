@@ -1,0 +1,74 @@
+# Internal CI: a git tag builds the image and pushes it to harbor. This file
+# serves the internal deployment only -- the public image is built by
+# .github/workflows/release.yml and lands on Docker Hub.
+#
+# The org's shared public-buildx runner already has harbor credentials in its
+# docker daemon, so there is no docker login here.
+#
+# DOCKER_BUILDKIT=0 produces a plain v2 manifest. BuildKit emits an attestation
+# manifest list that containerd stalls on when pulling.
+#
+# TARGETOS/TARGETARCH come free with BuildKit but not with the classic builder,
+# so they are passed explicitly -- the published image has to be amd64
+# regardless of what the runner happens to be.
+#
+# The Dockerfile's base images default to public registries, for outside users.
+# Here they are pointed at harbor: the runner has no route to docker.io or
+# gcr.io at all (verified 2026-09-22), so a build on the public defaults cannot
+# even pull its base image.
+#
+# Both were mirrored into harbor on 2026-09-22 for exactly this job, through the
+# cluster's pull-through cache (inference-stack-k8s/registry-mirror). They did
+# not exist before, so keep them alive -- a harbor retention policy that reaps
+# them breaks every build here.
+#
+# GOPROXY is the same mirror autoconfig and bodylog use: the runner cannot reach
+# proxy.golang.org either, which is what failed the first rehearsal of this job.
+#
+# Trigger: git tag only. Produces harbor.4pd.io/hardcore-tech/llm-operator:<tag>,
+# plus :latest for a non-prerelease tag.
+stages: [build]
+
+variables:
+  IMAGE: harbor.4pd.io/hardcore-tech/llm-operator
+  DOCKER_BUILDKIT: "0"
+
+build:image:
+  stage: build
+  tags: [public-buildx]
+  rules:
+    - if: '$CI_COMMIT_TAG'
+  script:
+    # Refuse a tag that the chart does not claim to install: appVersion is what
+    # `helm install` ships when image.tag is left empty, so a mismatch here means
+    # the chart would quietly deploy a different build than the one just tagged.
+    - |
+      set -eu
+      VER="${CI_COMMIT_TAG#v}"
+      # A prerelease (0.3.2-rc1) belongs to the release it is a candidate for,
+      # so the gate compares the version core and ignores the suffix.
+      CORE="${VER%%-*}"
+      APPV=$(sed -n 's/^appVersion: *"\{0,1\}\([^"]*\)"\{0,1\}/\1/p' dist/chart/Chart.yaml)
+      if [ "$APPV" != "$CORE" ]; then
+        echo "tag ${CI_COMMIT_TAG} != chart appVersion ${APPV} -- bump dist/chart/Chart.yaml first"
+        exit 1
+      fi
+      # latest must keep pointing at a real release, never at a candidate.
+      case "$VER" in
+        *-*) echo "prerelease ${VER}: not tagging latest" ;;
+        *)   echo "LATEST=1" >> build.env ;;
+      esac
+      echo "VER=${VER}" >> build.env
+      cat build.env
+    - docker build
+        --build-arg GO_IMAGE=harbor.4pd.io/hardcore-tech/golang:1.26
+        --build-arg RUNTIME_IMAGE=harbor.4pd.io/hardcore-tech/distroless-static:nonroot
+        --build-arg GOPROXY=https://mirrors.tencent.com/go/,direct
+        --build-arg TARGETOS=linux --build-arg TARGETARCH=amd64
+        -t "$IMAGE:${CI_COMMIT_TAG#v}" .
+    - docker push "$IMAGE:${CI_COMMIT_TAG#v}"
+    - |
+      if grep -q '^LATEST=1' build.env; then
+        docker tag "$IMAGE:${CI_COMMIT_TAG#v}" "$IMAGE:latest"
+        docker push "$IMAGE:latest"
+      fi

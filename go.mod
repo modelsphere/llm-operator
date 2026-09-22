@@ -1,4 +1,4 @@
-module gitlab.4pd.io/inference-production-stack/llm-operator
+module github.com/modelsphere/llm-operator
 
 go 1.26.0
 

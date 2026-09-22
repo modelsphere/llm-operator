@@ -50,6 +50,13 @@ jobs:
         run: |
           helm lint ./dist/chart
 
+      # The chart's CRD and manager role are copies of what controller-gen
+      # writes into config/. Nothing propagates one to the other, so an API
+      # change updates config/ and leaves the chart a version behind -- silently,
+      # until the stale CRD ships. This fails the build instead.
+      - name: Chart must be in sync with config/
+        run: make chart-check
+
 # TODO: Uncomment if cert-manager is enabled
 #      - name: Install cert-manager via Helm (wait for readiness)
 #        run: |
