@@ -17,7 +17,7 @@ metadata:
   name: {{ include "llmscaleoperator.resourceName" (dict "suffix" "llmscaler-viewer-role" "context" $) }}
 rules:
 - apiGroups:
-  - autoscaling.4pd.io
+  - autoscaling.modelsphere.dev
   resources:
   - llmscalers
   verbs:
@@ -25,7 +25,7 @@ rules:
   - list
   - watch
 - apiGroups:
-  - autoscaling.4pd.io
+  - autoscaling.modelsphere.dev
   resources:
   - llmscalers/status
   verbs:

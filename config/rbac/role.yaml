@@ -25,7 +25,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - autoscaling.4pd.io
+  - autoscaling.modelsphere.dev
   resources:
   - llmscalers
   verbs:
@@ -37,13 +37,13 @@ rules:
   - update
   - watch
 - apiGroups:
-  - autoscaling.4pd.io
+  - autoscaling.modelsphere.dev
   resources:
   - llmscalers/finalizers
   verbs:
   - update
 - apiGroups:
-  - autoscaling.4pd.io
+  - autoscaling.modelsphere.dev
   resources:
   - llmscalers/status
   verbs:

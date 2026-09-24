@@ -3,7 +3,7 @@
 # and allow the plugins properly work.
 # More info: https://book.kubebuilder.io/reference/project-config.html
 cliVersion: 4.15.0
-domain: 4pd.io
+domain: modelsphere.dev
 layout:
 - go.kubebuilder.io/v4
 plugins:
@@ -17,7 +17,7 @@ resources:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: 4pd.io
+  domain: modelsphere.dev
   group: autoscaling
   kind: LLMScaler
   path: github.com/modelsphere/llm-operator/api/v1alpha1

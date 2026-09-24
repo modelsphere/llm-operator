@@ -17,13 +17,13 @@ metadata:
   name: {{ include "llmscaleoperator.resourceName" (dict "suffix" "llmscaler-admin-role" "context" $) }}
 rules:
 - apiGroups:
-  - autoscaling.4pd.io
+  - autoscaling.modelsphere.dev
   resources:
   - llmscalers
   verbs:
   - '*'
 - apiGroups:
-  - autoscaling.4pd.io
+  - autoscaling.modelsphere.dev
   resources:
   - llmscalers/status
   verbs:

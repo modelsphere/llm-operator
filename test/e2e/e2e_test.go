@@ -355,7 +355,7 @@ spec:
 
 			By("creating an LLMScaler targeting the Deployment")
 			scalerYAML := `
-apiVersion: autoscaling.4pd.io/v1alpha1
+apiVersion: autoscaling.modelsphere.dev/v1alpha1
 kind: LLMScaler
 metadata:
   name: test-scaler

@@ -48,7 +48,7 @@ its runner has no route to docker.io or gcr.io.
 
 ## Description
 
-The operator introduces a single CRD, **`LLMScaler`** (`autoscaling.4pd.io`), that points at a scalable workload and drives its replica count from a metrics source.
+The operator introduces a single CRD, **`LLMScaler`** (`autoscaling.modelsphere.dev`), that points at a scalable workload and drives its replica count from a metrics source.
 
 - **Target** (`spec.targetRef`): any `Deployment`, `StatefulSet`, or `LeaderWorkerSet` (handled generically via the unstructured client).
 - **Metric provider** (`spec.metricProvider`): where the scaling signal comes from — `Prometheus` (default) or `Custom`. The two are alternatives, not layers: `Custom` replaces Prometheus outright and there is no fallback between them. See [Custom metric provider](#custom-metric-provider).
@@ -59,7 +59,7 @@ The operator introduces a single CRD, **`LLMScaler`** (`autoscaling.4pd.io`), th
 
 | | |
 | --- | --- |
-| Group / version | `autoscaling.4pd.io/v1alpha1` |
+| Group / version | `autoscaling.modelsphere.dev/v1alpha1` |
 | Kind | `LLMScaler` (list `LLMScalerList`) |
 | Resource | `llmscalers` (singular `llmscaler`) |
 | Scope | Namespaced |
@@ -132,7 +132,7 @@ Only read when `metricProvider: Custom`.
 #### Example
 
 ```yaml
-apiVersion: autoscaling.4pd.io/v1alpha1
+apiVersion: autoscaling.modelsphere.dev/v1alpha1
 kind: LLMScaler
 metadata:
   name: llmscaler-sample
@@ -159,7 +159,7 @@ spec:
     deletionCostQuery: 'vllm:kv_cache_usage_perc{namespace="default", app="vllm-opt-125m"} * 100'
 ```
 
-Kept in sync at `config/samples/autoscaling_v1alpha1_llmscaler.yaml`; the generated schema is `config/crd/bases/autoscaling.4pd.io_llmscalers.yaml`.
+Kept in sync at `config/samples/autoscaling_v1alpha1_llmscaler.yaml`; the generated schema is `config/crd/bases/autoscaling.modelsphere.dev_llmscalers.yaml`.
 
 ### Custom metric provider
 
@@ -195,7 +195,7 @@ Only `decisions[].replicas.active` is read; every other field either identifies 
 - **`scaleDown.deletionCostQuery` is ignored** under this provider: it is PromQL and `serverAddress` is now a decision server, so victim selection falls back to the newest-pod-first heuristic. The controller logs when it skips it.
 
 ```yaml
-apiVersion: autoscaling.4pd.io/v1alpha1
+apiVersion: autoscaling.modelsphere.dev/v1alpha1
 kind: LLMScaler
 metadata:
   name: llmscaler-custom-provider-sample
