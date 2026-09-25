@@ -1,7 +1,7 @@
 # This rule is not used by the project llmscaleoperator itself.
 # It is provided to allow the cluster admin to help manage permissions for users.
 #
-# Grants full permissions ('*') over autoscaling.4pd.io.
+# Grants full permissions ('*') over autoscaling.modelsphere.dev.
 # This role is intended for users authorized to modify roles and bindings within the cluster,
 # enabling them to delegate specific permissions to other users or groups as needed.
 
@@ -14,13 +14,13 @@ metadata:
   name: llmscaler-admin-role
 rules:
 - apiGroups:
-  - autoscaling.4pd.io
+  - autoscaling.modelsphere.dev
   resources:
   - llmscalers
   verbs:
   - '*'
 - apiGroups:
-  - autoscaling.4pd.io
+  - autoscaling.modelsphere.dev
   resources:
   - llmscalers/status
   verbs:

@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: llmscalers.autoscaling.4pd.io
+  name: llmscalers.autoscaling.modelsphere.dev
 spec:
-  group: autoscaling.4pd.io
+  group: autoscaling.modelsphere.dev
   names:
     kind: LLMScaler
     listKind: LLMScalerList

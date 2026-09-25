@@ -12,9 +12,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: llmscalers.autoscaling.4pd.io
+  name: llmscalers.autoscaling.modelsphere.dev
 spec:
-  group: autoscaling.4pd.io
+  group: autoscaling.modelsphere.dev
   names:
     kind: LLMScaler
     listKind: LLMScalerList
@@ -424,13 +424,13 @@ metadata:
   name: llmscaleoperator-llmscaler-admin-role
 rules:
 - apiGroups:
-  - autoscaling.4pd.io
+  - autoscaling.modelsphere.dev
   resources:
   - llmscalers
   verbs:
   - '*'
 - apiGroups:
-  - autoscaling.4pd.io
+  - autoscaling.modelsphere.dev
   resources:
   - llmscalers/status
   verbs:
@@ -445,7 +445,7 @@ metadata:
   name: llmscaleoperator-llmscaler-editor-role
 rules:
 - apiGroups:
-  - autoscaling.4pd.io
+  - autoscaling.modelsphere.dev
   resources:
   - llmscalers
   verbs:
@@ -457,7 +457,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - autoscaling.4pd.io
+  - autoscaling.modelsphere.dev
   resources:
   - llmscalers/status
   verbs:
@@ -472,7 +472,7 @@ metadata:
   name: llmscaleoperator-llmscaler-viewer-role
 rules:
 - apiGroups:
-  - autoscaling.4pd.io
+  - autoscaling.modelsphere.dev
   resources:
   - llmscalers
   verbs:
@@ -480,7 +480,7 @@ rules:
   - list
   - watch
 - apiGroups:
-  - autoscaling.4pd.io
+  - autoscaling.modelsphere.dev
   resources:
   - llmscalers/status
   verbs:
@@ -512,7 +512,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - autoscaling.4pd.io
+  - autoscaling.modelsphere.dev
   resources:
   - llmscalers
   verbs:
@@ -524,13 +524,13 @@ rules:
   - update
   - watch
 - apiGroups:
-  - autoscaling.4pd.io
+  - autoscaling.modelsphere.dev
   resources:
   - llmscalers/finalizers
   verbs:
   - update
 - apiGroups:
-  - autoscaling.4pd.io
+  - autoscaling.modelsphere.dev
   resources:
   - llmscalers/status
   verbs:
@@ -671,7 +671,7 @@ spec:
         - --health-probe-bind-address=:8081
         command:
         - /manager
-        image: 4pdosc/llm-operator:0.3.2
+        image: 4pdosc/llm-operator:0.4.0
         livenessProbe:
           httpGet:
             path: /healthz
