@@ -16,9 +16,8 @@ manager:
   replicas: 1
 
   image:
-    ## Public image. For an internal deployment, override with
-    ## harbor.4pd.io/hardcore-tech/llm-operator.
-    repository: 4pdosc/llm-operator
+    ## Published image. Override to run a build from another registry.
+    repository: docker.io/4pdosc/llm-operator
     ## Image tag. Left empty on purpose so it follows Chart.appVersion --
     ## a pinned tag here silently outranks appVersion and ships an older image
     ## than the chart claims to install.

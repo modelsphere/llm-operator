@@ -1,0 +1,22 @@
+version: 2
+updates:
+  # The Dockerfile's base images are build args (GO_IMAGE, RUNTIME_IMAGE),
+  # which Dependabot cannot follow, so there is no docker entry. Go and
+  # base-image upgrades are done by hand.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      # client-go, api, apimachinery and controller-runtime move together.
+      k8s:
+        patterns: ["k8s.io/*", "sigs.k8s.io/controller-runtime"]
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"

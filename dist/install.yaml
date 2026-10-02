@@ -671,7 +671,7 @@ spec:
         - --health-probe-bind-address=:8081
         command:
         - /manager
-        image: 4pdosc/llm-operator:0.4.0
+        image: docker.io/4pdosc/llm-operator:0.4.0
         livenessProbe:
           httpGet:
             path: /healthz
