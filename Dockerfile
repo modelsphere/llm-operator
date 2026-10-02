@@ -1,9 +1,7 @@
 # Build the manager binary.
 #
-# The two base images are build args so the same Dockerfile serves both worlds:
-# the defaults are public (Docker Hub / gcr.io) so an outside clone builds with
-# no extra flags, and the internal CI passes mirrors on harbor, where pulling
-# from docker.io is unreliable.
+# The two base images are build args: the defaults are public (Docker Hub /
+# gcr.io), and a build where those are unreachable can point them at a mirror.
 ARG GO_IMAGE=golang:1.26
 ARG RUNTIME_IMAGE=gcr.io/distroless/static:nonroot
 FROM ${GO_IMAGE} AS builder
@@ -13,13 +11,13 @@ FROM ${GO_IMAGE} AS builder
 # then builds for the host, which is what a non-buildx build wants anyway.
 ARG TARGETOS
 ARG TARGETARCH
-# Module proxy. The default is the public one, for an outside build; the
-# internal CI passes a mirror because its runner has no route to
-# proxy.golang.org. GOSUMDB is off because sum.golang.org is unreachable from
-# here too, and GOTOOLCHAIN=local keeps go from trying to fetch a toolchain of
+# Module proxy and checksum database. Empty means Go's own defaults
+# (proxy.golang.org, sum.golang.org); set them with --build-arg where those are
+# unreachable. GOTOOLCHAIN=local keeps go from trying to fetch a toolchain of
 # its own when go.mod names a newer one than the base image carries.
-ARG GOPROXY=https://proxy.golang.org,direct
-ENV GOPROXY=${GOPROXY} GOSUMDB=off GOTOOLCHAIN=local
+ARG GOPROXY=
+ARG GOSUMDB=
+ENV GOPROXY=${GOPROXY} GOSUMDB=${GOSUMDB} GOTOOLCHAIN=local
 # Module resolution mode: "auto" builds from vendor/ when it is present in the
 # build context and falls back to downloading modules otherwise. Set to "vendor"
 # or "mod" to require one of them (i.e. --build-arg GO_MOD_MODE=mod).

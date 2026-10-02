@@ -1,9 +1,8 @@
 # Image URL to use all building/pushing image targets.
-# Defaults to the public image on Docker Hub so a clone builds and runs without
-# access to any internal registry. Point it at the internal one when building
-# for production:
-#   make docker-build docker-push IMG=harbor.4pd.io/hardcore-tech/llm-operator:0.3.2
-IMG ?= 4pdosc/llm-operator:0.4.0
+# Defaults to the published image. Point it at your own registry to build and
+# push one:
+#   make docker-build docker-push IMG=registry.example.com/llm-operator:<tag>
+IMG ?= ghcr.io/modelsphere/llm-operator:0.4.0
 export IMG
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)

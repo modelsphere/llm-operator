@@ -4,5 +4,5 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 images:
 - name: controller
-  newName: 4pdosc/llm-operator
+  newName: ghcr.io/modelsphere/llm-operator
   newTag: 0.4.0

@@ -10,41 +10,41 @@ rather than CPU/memory. Think of it as an HPA specialized for token-serving.
 
 | | |
 | --- | --- |
-| Public image | `4pdosc/llm-operator` (Docker Hub) — the default everywhere in this repo |
-| Internal image | `harbor.4pd.io/hardcore-tech/llm-operator` — same build, internal registry |
+| Image | `ghcr.io/modelsphere/llm-operator` — the default everywhere in this repo |
+| Helm chart | `oci://ghcr.io/modelsphere/charts/llmscaleoperator` |
 
-Both are built from the same `Dockerfile`; only the base-image build args and the
-destination registry differ. Tagging `vX.Y.Z` publishes both:
-`.github/workflows/release.yml` pushes to Docker Hub, `.gitlab-ci.yml` to harbor.
+`.github/workflows/release.yml` builds both at one version. Tagging `vX.Y.Z`
+publishes `X.Y.Z` (and `latest`, unless it is a prerelease); every push to `main`
+publishes `<appVersion>-git<sha7>`. The same image is also pushed to Docker Hub as
+`4pdosc/llm-operator`. Releases up to and including 0.4.0 were published to Docker
+Hub only.
 
-Both pipelines refuse a tag that does not match `appVersion` in
+The release workflow refuses a tag that does not match `appVersion` in
 `dist/chart/Chart.yaml`. The chart leaves `manager.image.tag` empty so it follows
 `appVersion`; a tag that disagrees would publish one build and install another.
 
-To run the internal image instead of the public one:
+To run an image from another registry:
 
 ```bash
 # Helm
 helm install llmscaleoperator ./dist/chart \
-  --set manager.image.repository=harbor.4pd.io/hardcore-tech/llm-operator
+  --set manager.image.repository=registry.example.com/llm-operator
 
 # Makefile targets
-make deploy IMG=harbor.4pd.io/hardcore-tech/llm-operator:0.3.2
+make deploy IMG=registry.example.com/llm-operator:<tag>
 ```
 
 The Dockerfile's two base images are build args, defaulting to the public
 `golang` and `gcr.io/distroless/static`. Point them at a mirror where those
-registries are unreachable:
+registries are unreachable, and set `GOPROXY` (and `GOSUMDB`) if
+`proxy.golang.org` is too:
 
 ```bash
 docker build \
   --build-arg GO_IMAGE=<mirror>/golang:1.26 \
-  --build-arg RUNTIME_IMAGE=<mirror>/distroless-static:nonroot .
+  --build-arg RUNTIME_IMAGE=<mirror>/distroless-static:nonroot \
+  --build-arg GOPROXY=<goproxy>,direct .
 ```
-
-The internal CI passes `harbor.4pd.io/hardcore-tech/golang:1.26` and
-`harbor.4pd.io/hardcore-tech/distroless-static:nonroot`, mirrored there because
-its runner has no route to docker.io or gcr.io.
 
 ## Description
 
@@ -170,7 +170,7 @@ GET {serverAddress}{customProvider.path}?serviceId={customProvider.serviceId}
 ```
 
 ```console
-$ curl http://10.98.120.218:80/decisions?serviceId=fallback-modelforge-01
+$ curl 'http://llm-decision-server.modelforge.svc:80/decisions?serviceId=fallback-modelforge-01'
 {
   "apiVersion": "llmscaling.inference.x-k8s.io/v1alpha1",
   "decisions": [
