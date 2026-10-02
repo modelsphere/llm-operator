@@ -17,7 +17,7 @@ manager:
 
   image:
     ## Published image. Override to run a build from another registry.
-    repository: ghcr.io/modelsphere/llm-operator
+    repository: docker.io/4pdosc/llm-operator
     ## Image tag. Left empty on purpose so it follows Chart.appVersion --
     ## a pinned tag here silently outranks appVersion and ships an older image
     ## than the chart claims to install.

@@ -10,14 +10,13 @@ rather than CPU/memory. Think of it as an HPA specialized for token-serving.
 
 | | |
 | --- | --- |
-| Image | `ghcr.io/modelsphere/llm-operator` — the default everywhere in this repo |
+| Image | `docker.io/4pdosc/llm-operator` (the default in this repo) and `ghcr.io/modelsphere/llm-operator` |
 | Helm chart | `oci://ghcr.io/modelsphere/charts/llmscaleoperator` |
 
 `.github/workflows/release.yml` builds both at one version. Tagging `vX.Y.Z`
 publishes `X.Y.Z` (and `latest`, unless it is a prerelease); every push to `main`
-publishes `<appVersion>-git<sha7>`. The same image is also pushed to Docker Hub as
-`4pdosc/llm-operator`. Releases up to and including 0.4.0 were published to Docker
-Hub only.
+publishes `<appVersion>-git<sha7>`, to both registries. Releases up to and including
+0.4.0 were published to Docker Hub only, which is why Docker Hub is the default.
 
 The release workflow refuses a tag that does not match `appVersion` in
 `dist/chart/Chart.yaml`. The chart leaves `manager.image.tag` empty so it follows

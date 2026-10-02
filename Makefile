@@ -2,7 +2,7 @@
 # Defaults to the published image. Point it at your own registry to build and
 # push one:
 #   make docker-build docker-push IMG=registry.example.com/llm-operator:<tag>
-IMG ?= ghcr.io/modelsphere/llm-operator:0.4.0
+IMG ?= docker.io/4pdosc/llm-operator:0.4.0
 export IMG
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)

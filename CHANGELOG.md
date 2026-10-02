@@ -20,8 +20,8 @@ chart's `appVersion` and the image tag; release tags carry a `v` prefix
 
 ### Changed
 - The default image in the Makefile, the chart, the kustomize config and
-  `dist/install.yaml` is `ghcr.io/modelsphere/llm-operator`. The image is still
-  pushed to Docker Hub as well.
+  `dist/install.yaml` is the published `docker.io/4pdosc/llm-operator`
+  instead of an internal registry.
 - The Dockerfile leaves `GOPROXY` and `GOSUMDB` at Go's defaults (the checksum
   database was turned off before); both stay build args.
 - GitHub Actions in `release.yml` pinned to commit SHAs.
