@@ -8,16 +8,10 @@ rather than CPU/memory. Think of it as an HPA specialized for token-serving.
 
 ## Images and releases
 
-| | |
-| --- | --- |
-| Public image | `4pdosc/llm-operator` (Docker Hub) — the default everywhere in this repo |
-| Internal image | `harbor.4pd.io/hardcore-tech/llm-operator` — same build, internal registry |
+The image is `4pdosc/llm-operator` on Docker Hub, the default everywhere in this
+repo. Tagging `vX.Y.Z` publishes it through `.github/workflows/release.yml`.
 
-Both are built from the same `Dockerfile`; only the base-image build args and the
-destination registry differ. Tagging `vX.Y.Z` publishes both:
-`.github/workflows/release.yml` pushes to Docker Hub, `.gitlab-ci.yml` to harbor.
-
-Both pipelines refuse a tag that does not match `appVersion` in
+The release workflow refuses a tag that does not match `appVersion` in
 `dist/chart/Chart.yaml`. The chart leaves `manager.image.tag` empty so it follows
 `appVersion`; a tag that disagrees would publish one build and install another.
 
