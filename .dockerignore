@@ -6,8 +6,8 @@
 # never reaches cmd/main.go, and the build fails with the unhelpful
 # "package cmd/main.go is not in std" -- go's way of saying the file is absent.
 # Verified by building this context with DOCKER_BUILDKIT=0: go.mod arrived and
-# nothing else. The internal pipeline runs the classic builder deliberately, so
-# the ignore file has to work for both.
+# nothing else. Some build environments still use the classic builder, so the
+# ignore file has to work for both.
 .git
 .github
 .devcontainer

@@ -16,8 +16,7 @@ manager:
   replicas: 1
 
   image:
-    ## Public image. For an internal deployment, override with
-    ## harbor.4pd.io/hardcore-tech/llm-operator.
+    ## Public image on Docker Hub. Override it to run your own build.
     repository: 4pdosc/llm-operator
     ## Image tag. Left empty on purpose so it follows Chart.appVersion --
     ## a pinned tag here silently outranks appVersion and ships an older image
