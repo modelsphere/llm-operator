@@ -15,15 +15,15 @@ The release workflow refuses a tag that does not match `appVersion` in
 `dist/chart/Chart.yaml`. The chart leaves `manager.image.tag` empty so it follows
 `appVersion`; a tag that disagrees would publish one build and install another.
 
-To run the internal image instead of the public one:
+To run your own build instead of the public image:
 
 ```bash
 # Helm
 helm install llmscaleoperator ./dist/chart \
-  --set manager.image.repository=harbor.4pd.io/hardcore-tech/llm-operator
+  --set manager.image.repository=<registry>/llm-operator
 
 # Makefile targets
-make deploy IMG=harbor.4pd.io/hardcore-tech/llm-operator:0.3.2
+make deploy IMG=<registry>/llm-operator:<tag>
 ```
 
 The Dockerfile's two base images are build args, defaulting to the public
@@ -35,10 +35,6 @@ docker build \
   --build-arg GO_IMAGE=<mirror>/golang:1.26 \
   --build-arg RUNTIME_IMAGE=<mirror>/distroless-static:nonroot .
 ```
-
-The internal CI passes `harbor.4pd.io/hardcore-tech/golang:1.26` and
-`harbor.4pd.io/hardcore-tech/distroless-static:nonroot`, mirrored there because
-its runner has no route to docker.io or gcr.io.
 
 ## Description
 
