@@ -2,4 +2,5 @@
 resources:
 - autoscaling_v1alpha1_llmscaler.yaml
 - autoscaling_v1alpha1_llmscaler_customprovider.yaml
+- serving_v1alpha1_llmservice.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

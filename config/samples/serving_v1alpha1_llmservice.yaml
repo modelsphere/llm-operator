@@ -1,0 +1,47 @@
+apiVersion: serving.modelsphere.dev/v1alpha1
+kind: LLMService
+metadata:
+  labels:
+    app.kubernetes.io/name: llmscaleoperator
+    app.kubernetes.io/managed-by: kustomize
+  name: qwen
+  namespace: models
+  annotations:
+    swiss.modelsphere.dev/plan-hash: sha256:9f2c4a1b8e0d
+    swiss.modelsphere.dev/catalog: /models/index.json
+    swiss.modelsphere.dev/catalog-name: public
+    swiss.modelsphere.dev/catalog-ref: sha256:c0ffee
+    swiss.modelsphere.dev/entry-digest: sha256:a1b2c3
+    swiss.modelsphere.dev/profile: prod
+    swiss.modelsphere.dev/action: upgrade
+    swiss.modelsphere.dev/note: "bump to 1.1.0"
+spec:
+  chart:
+    name: sglang
+    repo: oci://ghcr.io/modelsphere/charts
+    version: ">=0.8.0"
+    # Secret data keys: username, password. Omit credentialsRef for an anonymous pull.
+    credentialsRef:
+      name: chart-pull
+  layers:
+    - name: catalog
+      values:
+        model: qwen3.6-35b-a3b
+        engine: sglang
+    - name: site
+      values:
+        replicaCount: 2
+        resources:
+          limits:
+            nvidia.com/gpu: "1"
+    - name: derived
+      values:
+        service:
+          port: 30000
+  model:
+    name: qwen3.6-35b-a3b
+    version: "1.1.0"
+    variant: sglang-tp2-h100
+    hf: Qwen/Qwen3.6-35B-A3B
+    engine: sglang
+  suspend: false

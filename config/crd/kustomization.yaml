@@ -3,6 +3,7 @@
 # It should be run by config/default
 resources:
 - bases/autoscaling.modelsphere.dev_llmscalers.yaml
+- bases/serving.modelsphere.dev_llmservices.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

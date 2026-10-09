@@ -6,6 +6,7 @@ cliVersion: 4.15.0
 domain: modelsphere.dev
 layout:
 - go.kubebuilder.io/v4
+multigroup: true
 plugins:
   helm.kubebuilder.io/v2-alpha:
     manifests: dist/install.yaml
@@ -20,6 +21,15 @@ resources:
   domain: modelsphere.dev
   group: autoscaling
   kind: LLMScaler
-  path: github.com/modelsphere/llm-operator/api/v1alpha1
+  path: github.com/modelsphere/llm-operator/api/autoscaling/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: modelsphere.dev
+  group: serving
+  kind: LLMService
+  path: github.com/modelsphere/llm-operator/api/serving/v1alpha1
   version: v1alpha1
 version: "3"
