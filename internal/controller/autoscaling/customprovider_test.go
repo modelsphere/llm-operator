@@ -26,7 +26,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/types"
 
-	autoscalingv1alpha1 "github.com/modelsphere/llm-operator/api/v1alpha1"
+	autoscalingv1alpha1 "github.com/modelsphere/llm-operator/api/autoscaling/v1alpha1"
 )
 
 const (

@@ -99,7 +99,7 @@ cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
 
 # Paths to lint/format. Override to scope to a subset, e.g. from the git hook:
-#   make lint-format LINT_PATHS="internal/controller/foo.go api/v1alpha1/bar.go"
+#   make lint-format LINT_PATHS="internal/controller/autoscaling/foo.go api/autoscaling/v1alpha1/bar.go"
 LINT_PATHS ?= ./...
 
 .PHONY: lint
@@ -257,9 +257,10 @@ $(ENVTEST): $(LOCALBIN)
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+	@# Upstream golangci-lint's go line is one release behind this module.
 	@test -f .custom-gcl.yml && { \
 		echo "Building custom golangci-lint with plugins..." && \
-		$(GOLANGCI_LINT) custom --destination $(LOCALBIN) --name golangci-lint-custom && \
+		GOTOOLCHAIN=go$$(awk '/^go /{print $$2; exit}' go.mod) $(GOLANGCI_LINT) custom --destination $(LOCALBIN) --name golangci-lint-custom && \
 		mv -f $(LOCALBIN)/golangci-lint-custom $(GOLANGCI_LINT); \
 	} || true
 

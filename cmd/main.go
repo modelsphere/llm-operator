@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"path/filepath"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -35,8 +36,11 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	autoscalingv1alpha1 "github.com/modelsphere/llm-operator/api/v1alpha1"
-	"github.com/modelsphere/llm-operator/internal/controller"
+	autoscalingv1alpha1 "github.com/modelsphere/llm-operator/api/autoscaling/v1alpha1"
+	servingv1alpha1 "github.com/modelsphere/llm-operator/api/serving/v1alpha1"
+	controller "github.com/modelsphere/llm-operator/internal/controller/autoscaling"
+	servingcontroller "github.com/modelsphere/llm-operator/internal/controller/serving"
+	"github.com/modelsphere/llm-operator/internal/helm"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -49,6 +53,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(autoscalingv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(servingv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -79,6 +84,13 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	var llmserviceHistoryLimit int
+	var llmserviceChartCacheDir string
+	flag.IntVar(&llmserviceHistoryLimit, "llmservice-history-limit", servingv1alpha1.DefaultHistoryLimit,
+		"Maximum status.history entries kept for each LLMService.")
+	flag.StringVar(&llmserviceChartCacheDir, "llmservice-chart-cache-dir",
+		filepath.Join(os.TempDir(), "llm-operator-charts"),
+		"Directory for Helm charts cached by the LLMService controller.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -183,6 +195,16 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "llmscaler")
+		os.Exit(1)
+	}
+	if err := (&servingcontroller.LLMServiceReconciler{
+		Client:       mgr.GetClient(),
+		Scheme:       mgr.GetScheme(),
+		Helm:         helm.New(mgr.GetConfig(), llmserviceChartCacheDir),
+		Recorder:     mgr.GetEventRecorder("llmservice"),
+		HistoryLimit: llmserviceHistoryLimit,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "serving-llmservice")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

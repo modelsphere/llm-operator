@@ -38,7 +38,7 @@ docker build \
 
 ## Description
 
-The operator introduces a single CRD, **`LLMScaler`** (`autoscaling.modelsphere.dev`), that points at a scalable workload and drives its replica count from a metrics source.
+The operator introduces two CRDs. **`LLMScaler`** (`autoscaling.modelsphere.dev`) points at a scalable workload and drives its replica count from a metrics source. **`LLMService`** (`serving.modelsphere.dev`) installs one Helm release per service; see [LLMService](docs/llmservice.md).
 
 - **Target** (`spec.targetRef`): any `Deployment`, `StatefulSet`, or `LeaderWorkerSet` (handled generically via the unstructured client).
 - **Metric provider** (`spec.metricProvider`): where the scaling signal comes from — `Prometheus` (default) or `Custom`. The two are alternatives, not layers: `Custom` replaces Prometheus outright and there is no fallback between them. See [Custom metric provider](#custom-metric-provider).
