@@ -49,6 +49,8 @@ const (
 	credentialUsernameKey = "username"
 	credentialPasswordKey = "password"
 	actionAnnotation      = servingv1alpha1.SwissAnnotationPrefix + "action"
+	// statusDeployed is the helm release status adoption accepts.
+	statusDeployed = "deployed"
 )
 
 // VersionLister lists chart versions for spec.chart. Tests set it.
@@ -164,9 +166,27 @@ func (r *LLMServiceReconciler) reconcileApply(ctx context.Context, obj *servingv
 		return r.fail(ctx, obj, servingv1alpha1.ConditionApplied, servingv1alpha1.ReasonApplyFailed, err, true)
 	}
 	if rel != nil && obj.Status.AppliedHash == "" && len(obj.Status.History) == 0 {
-		return r.adopt(ctx, obj, ver, values, hash, rel)
+		return r.reconcileUnowned(ctx, obj, ver, values, hash, creds, rel)
 	}
 	return r.apply(ctx, obj, ver, values, hash, creds, rel)
+}
+
+// reconcileUnowned handles a release this object has never recorded.
+// Only a deployed release can be adopted. A release left failed by our own
+// install is upgraded. Anything else is drift and is not retried.
+func (r *LLMServiceReconciler) reconcileUnowned(ctx context.Context, obj *servingv1alpha1.LLMService, ver string, values map[string]any, hash string, creds *helm.Credentials, rel *helm.Release) (ctrl.Result, error) {
+	if rel.Status != statusDeployed {
+		if ownApplyFailed(obj) {
+			return r.apply(ctx, obj, ver, values, hash, creds, rel)
+		}
+		return r.drift(ctx, obj, fmt.Sprintf("release is %s, not deployed", rel.Status))
+	}
+	return r.adopt(ctx, obj, ver, values, hash, rel)
+}
+
+func ownApplyFailed(obj *servingv1alpha1.LLMService) bool {
+	cond := meta.FindStatusCondition(obj.Status.Conditions, servingv1alpha1.ConditionApplied)
+	return cond != nil && cond.Reason == servingv1alpha1.ReasonApplyFailed
 }
 
 func (r *LLMServiceReconciler) adopt(ctx context.Context, obj *servingv1alpha1.LLMService, ver string, values map[string]any, hash string, rel *helm.Release) (ctrl.Result, error) {
@@ -187,7 +207,11 @@ func (r *LLMServiceReconciler) adopt(ctx context.Context, obj *servingv1alpha1.L
 		}
 		return ctrl.Result{}, nil
 	}
-	msg := driftMessage(obj.Spec.Chart.Name, ver, rel, !valuesOK)
+	return r.drift(ctx, obj, driftMessage(obj.Spec.Chart.Name, ver, rel, !valuesOK))
+}
+
+// drift records a terminal adoption failure and does not requeue.
+func (r *LLMServiceReconciler) drift(ctx context.Context, obj *servingv1alpha1.LLMService, msg string) (ctrl.Result, error) {
 	meta.SetStatusCondition(&obj.Status.Conditions, metav1.Condition{
 		Type:               servingv1alpha1.ConditionApplied,
 		Status:             metav1.ConditionFalse,
@@ -195,11 +219,11 @@ func (r *LLMServiceReconciler) adopt(ctx context.Context, obj *servingv1alpha1.L
 		Message:            msg,
 		ObservedGeneration: obj.Generation,
 	})
-	// Drift does not requeue. The next spec change reconciles again.
 	return r.fail(ctx, obj, servingv1alpha1.ConditionAdopted, servingv1alpha1.ReasonDrift, errors.New(msg), false)
 }
 
 func (r *LLMServiceReconciler) apply(ctx context.Context, obj *servingv1alpha1.LLMService, ver string, values map[string]any, hash string, creds *helm.Credentials, existing *helm.Release) (ctrl.Result, error) {
+	// Applying is in progress. Keep observedGeneration at the last completed generation.
 	obj.Status.Phase = servingv1alpha1.PhaseApplying
 	if err := r.updateStatus(ctx, obj); err != nil {
 		return ctrl.Result{}, err
