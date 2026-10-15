@@ -96,9 +96,10 @@ spec:
                   version:
                     description: |-
                       version is an exact chart version or a semver range. The operator
-                      resolves it once per spec change and pins the result on status.chart.
-                      While the pinned version still satisfies the range, a newer chart in
-                      the repository does not move the release.
+                      resolves it on first apply and pins the result on status.chart. While
+                      the pinned version still satisfies the range it is kept, through other
+                      spec changes and newer charts in the repository alike; a new
+                      serving.modelsphere.dev/re-resolve value moves it to the newest in range.
                     minLength: 1
                     type: string
                 required:
@@ -178,6 +179,11 @@ spec:
                 properties:
                   name:
                     description: name is the chart name that was resolved.
+                    type: string
+                  reResolve:
+                    description: |-
+                      reResolve is the serving.modelsphere.dev/re-resolve value already
+                      honored. Only a different non-empty value re-resolves.
                     type: string
                   version:
                     description: version is the exact chart version resolved from
@@ -293,6 +299,11 @@ spec:
                     hash:
                       description: hash is the appliedHash at this revision.
                       type: string
+                    reResolved:
+                      description: |-
+                        reResolved records that this apply honored a new
+                        serving.modelsphere.dev/re-resolve value rather than the pinned version.
+                      type: boolean
                     revision:
                       description: revision is the helm release revision this entry
                         records.

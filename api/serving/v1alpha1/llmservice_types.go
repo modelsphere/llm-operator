@@ -74,6 +74,11 @@ const (
 	// apply take fields other managers own. Any other generation ignores it.
 	AnnotationForceConflicts = "serving.modelsphere.dev/force-conflicts"
 
+	// AnnotationReResolve, set to a value status.chart.reResolve does not hold,
+	// drops the pinned status.chart.version once, so a range resolves to the
+	// newest chart the repository holds. Any later new value does it again.
+	AnnotationReResolve = "serving.modelsphere.dev/re-resolve"
+
 	// SwissAnnotationPrefix selects annotations copied into each history entry.
 	// The operator otherwise ignores them.
 	SwissAnnotationPrefix = "swiss.modelsphere.dev/"
@@ -116,9 +121,10 @@ type ChartSpec struct {
 	Repo string `json:"repo"`
 
 	// version is an exact chart version or a semver range. The operator
-	// resolves it once per spec change and pins the result on status.chart.
-	// While the pinned version still satisfies the range, a newer chart in
-	// the repository does not move the release.
+	// resolves it on first apply and pins the result on status.chart. While
+	// the pinned version still satisfies the range it is kept, through other
+	// spec changes and newer charts in the repository alike; a new
+	// serving.modelsphere.dev/re-resolve value moves it to the newest in range.
 	// +kubebuilder:validation:MinLength=1
 	Version string `json:"version"`
 
@@ -202,6 +208,11 @@ type ChartStatus struct {
 	// version is the exact chart version resolved from spec.chart.version.
 	// +optional
 	Version string `json:"version,omitempty"`
+
+	// reResolve is the serving.modelsphere.dev/re-resolve value already
+	// honored. Only a different non-empty value re-resolves.
+	// +optional
+	ReResolve string `json:"reResolve,omitempty"`
 }
 
 // HelmStatus is the helm release last observed for this LLMService.
@@ -239,6 +250,11 @@ type HistoryEntry struct {
 	// serving.modelsphere.dev/force-conflicts for its generation.
 	// +optional
 	ForceConflicts bool `json:"forceConflicts,omitempty"`
+
+	// reResolved records that this apply honored a new
+	// serving.modelsphere.dev/re-resolve value rather than the pinned version.
+	// +optional
+	ReResolved bool `json:"reResolved,omitempty"`
 
 	// action is the swiss action copied for this revision (install, upgrade,
 	// rollback, or migrate), when one was set.

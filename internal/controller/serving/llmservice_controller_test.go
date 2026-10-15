@@ -387,6 +387,62 @@ var _ = Describe("LLMService controller", func() {
 		Expect(h.upgrades).To(Equal(1))
 	})
 
+	It("re-resolves once per new re-resolve value", func() {
+		ns := takeNS()
+		h := &fakeHelm{}
+		l := &versionList{versions: []string{ver086}}
+		r := newReconciler(h, l, 10)
+		Expect(k8sClient.Create(ctx, newService(ns, "qwen", ">=0.8.0"))).To(Succeed())
+		_, err := doReconcile(r, ns, "qwen")
+		Expect(err).NotTo(HaveOccurred())
+		reResolve := func(v string) {
+			got := fetch(ns, "qwen")
+			got.Annotations[servingv1alpha1.AnnotationReResolve] = v
+			Expect(k8sClient.Update(ctx, got)).To(Succeed())
+		}
+
+		// Nothing newer: honored without an upgrade.
+		reResolve("1")
+		_, err = doReconcile(r, ns, "qwen")
+		Expect(err).NotTo(HaveOccurred())
+		got := fetch(ns, "qwen")
+		Expect(got.Status.Chart.Version).To(Equal(ver086))
+		Expect(got.Status.Chart.ReResolve).To(Equal("1"))
+		Expect(l.calls).To(Equal(2))
+		Expect(h.upgrades).To(Equal(0))
+
+		// A newer chart under an honored value does not move the release.
+		l.versions = []string{ver086, "0.9.0"}
+		_, err = doReconcile(r, ns, "qwen")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(fetch(ns, "qwen").Status.Chart.Version).To(Equal(ver086))
+		Expect(l.calls).To(Equal(2))
+
+		// A failed upgrade leaves the value unhonored, so the retry re-resolves.
+		h.upgradeErr = errors.New("boom")
+		reResolve("2")
+		_, err = doReconcile(r, ns, "qwen")
+		Expect(err).To(HaveOccurred())
+		got = fetch(ns, "qwen")
+		Expect(got.Status.Chart.Version).To(Equal(ver086))
+		Expect(got.Status.Chart.ReResolve).To(Equal("1"))
+
+		h.upgradeErr = nil
+		_, err = doReconcile(r, ns, "qwen")
+		Expect(err).NotTo(HaveOccurred())
+		got = fetch(ns, "qwen")
+		Expect(got.Status.Chart.Version).To(Equal("0.9.0"))
+		Expect(got.Status.Chart.ReResolve).To(Equal("2"))
+		Expect(got.Status.History[0].ReResolved).To(BeTrue())
+		Expect(h.upgrades).To(Equal(2))
+
+		l.versions = []string{ver086, "0.9.0", "0.9.1"}
+		_, err = doReconcile(r, ns, "qwen")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(fetch(ns, "qwen").Status.Chart.Version).To(Equal("0.9.0"))
+		Expect(h.upgrades).To(Equal(2))
+	})
+
 	It("adopts a matching release and refuses drift", func() {
 		ns := takeNS()
 		h := &fakeHelm{}

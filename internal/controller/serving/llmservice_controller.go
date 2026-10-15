@@ -174,7 +174,7 @@ func (r *LLMServiceReconciler) reconcileApply(ctx context.Context, obj *servingv
 		return r.fail(ctx, obj, servingv1alpha1.ConditionApplied, servingv1alpha1.ReasonChartResolveFailed, err, true)
 	}
 	keep := ""
-	if obj.Status.Chart.Name == obj.Spec.Chart.Name {
+	if obj.Status.Chart.Name == obj.Spec.Chart.Name && !reResolving(obj) {
 		keep = obj.Status.Chart.Version
 	}
 	ver, err := chart.Resolve(ctx, spec, "", keep, func(ctx context.Context) ([]string, error) {
@@ -416,9 +416,13 @@ func (r *LLMServiceReconciler) apply(ctx context.Context, obj *servingv1alpha1.L
 
 func (r *LLMServiceReconciler) finishApplied(ctx context.Context, obj *servingv1alpha1.LLMService) (ctrl.Result, error) {
 	cond := meta.FindStatusCondition(obj.Status.Conditions, servingv1alpha1.ConditionApplied)
+	// A re-resolve that found nothing newer is honored too, or every later
+	// reconcile would re-resolve and follow the repository.
+	reResolve := obj.Annotations[servingv1alpha1.AnnotationReResolve]
 	changed := obj.Status.Phase != servingv1alpha1.PhaseApplied ||
 		obj.Status.ObservedGeneration != obj.Generation ||
 		obj.Status.Message != "" ||
+		obj.Status.Chart.ReResolve != reResolve ||
 		cond == nil || cond.Status != metav1.ConditionTrue
 	if changed {
 		if cond == nil || cond.Status != metav1.ConditionTrue {
@@ -432,6 +436,7 @@ func (r *LLMServiceReconciler) finishApplied(ctx context.Context, obj *servingv1
 		obj.Status.Phase = servingv1alpha1.PhaseApplied
 		obj.Status.Message = ""
 		obj.Status.ObservedGeneration = obj.Generation
+		obj.Status.Chart.ReResolve = reResolve
 		if err := r.updateStatus(ctx, obj); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -464,6 +469,7 @@ func (r *LLMServiceReconciler) recordSuccess(ctx context.Context, obj *servingv1
 		ControllerRevision: crName,
 		Annotations:        ann,
 		ForceConflicts:     force,
+		ReResolved:         reResolving(obj),
 		Action:             obj.Annotations[actionAnnotation],
 	}
 	obj.Status.History = append([]servingv1alpha1.HistoryEntry{entry}, obj.Status.History...)
@@ -472,7 +478,7 @@ func (r *LLMServiceReconciler) recordSuccess(ctx context.Context, obj *servingv1
 	}
 	obj.Status.AppliedHash = hash
 	obj.Status.ReleaseUID = string(obj.UID)
-	obj.Status.Chart = servingv1alpha1.ChartStatus{Name: chartName, Version: chartVersion}
+	obj.Status.Chart = servingv1alpha1.ChartStatus{Name: chartName, Version: chartVersion, ReResolve: obj.Annotations[servingv1alpha1.AnnotationReResolve]}
 	obj.Status.Helm = servingv1alpha1.HelmStatus{Revision: rel.Revision, Status: rel.Status}
 	obj.Status.Phase = servingv1alpha1.PhaseApplied
 	obj.Status.Message = ""
@@ -711,6 +717,13 @@ func installedOrAdopted(obj *servingv1alpha1.LLMService, rel *helm.Release) bool
 		return uid != "" && uid == string(obj.UID)
 	}
 	return len(obj.Status.History) > 0
+}
+
+// reResolving reports whether serving.modelsphere.dev/re-resolve holds a value
+// not yet honored. Until a success records it, a retry re-resolves again.
+func reResolving(obj *servingv1alpha1.LLMService) bool {
+	v := obj.Annotations[servingv1alpha1.AnnotationReResolve]
+	return v != "" && v != obj.Status.Chart.ReResolve
 }
 
 func releaseLabels(obj *servingv1alpha1.LLMService) map[string]string {
