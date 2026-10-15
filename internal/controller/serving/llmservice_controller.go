@@ -96,6 +96,7 @@ type LLMServiceReconciler struct {
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=monitoring.coreos.com,resources=servicemonitors,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=leaderworkerset.x-k8s.io,resources=leaderworkersets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=disaggregatedset.x-k8s.io,resources=disaggregatedsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling.4pd.io;autoscaling.modelsphere.dev,resources=llmscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=inference.x-k8s.io;inference.modelsphere.dev,resources=llmslorequirements,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=routing.gpucluster.io;routing.modelsphere.dev,resources=modelroutes,verbs=get;list;watch;create;update;patch;delete
