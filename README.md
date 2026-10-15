@@ -1,5 +1,16 @@
 # llmscaleoperator
 
+[![publish](https://github.com/modelsphere/llm-operator/actions/workflows/release.yml/badge.svg)](https://github.com/modelsphere/llm-operator/actions/workflows/release.yml)
+[![version](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmodelsphere%2Fllm-operator%2Fmaster%2Fdist%2Fchart%2FChart.yaml&query=%24.appVersion&label=version&color=blue)](dist/chart/Chart.yaml)
+[![image](https://img.shields.io/badge/image-ghcr.io%2Fmodelsphere%2Fllm--operator-2496ED?logo=docker&logoColor=white)](https://github.com/modelsphere/llm-operator/pkgs/container/llm-operator)
+[![docker hub](https://img.shields.io/docker/v/4pdosc/llm-operator?style=flat&logo=docker&logoColor=white&color=blue)](https://hub.docker.com/r/4pdosc/llm-operator)
+[![Image Size](https://img.shields.io/docker/image-size/4pdosc/llm-operator)](https://hub.docker.com/r/4pdosc/llm-operator)
+[![chart](https://img.shields.io/badge/chart-oci%3A%2F%2Fghcr.io%2Fmodelsphere%2Fcharts%2Fllmscaleoperator-0F1689?logo=helm&logoColor=white)](https://github.com/modelsphere/llm-operator/pkgs/container/charts%2Fllmscaleoperator)
+[![go](https://img.shields.io/github/go-mod/go-version/modelsphere/llm-operator/master?logo=go)](go.mod)
+[![license](https://img.shields.io/github/license/modelsphere/llm-operator)](LICENSE)
+[![stars](https://img.shields.io/github/stars/modelsphere/llm-operator?style=flat&logo=github)](https://github.com/modelsphere/llm-operator/stargazers)
+
+
 A Kubernetes operator that autoscales LLM inference workloads (e.g. vLLM) on
 LLM-specific signals — KV-cache utilization, queue depth, TPM/capacity load —
 rather than CPU/memory. Think of it as an HPA specialized for token-serving.
