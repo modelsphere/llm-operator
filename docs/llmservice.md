@@ -241,7 +241,7 @@ A chart-list, credentials, or Helm read error retries with backoff and does not 
    - Owned: apply (step 10). This is an install whose status was wiped.
    - Not owned and `deployed`: adopt. The release's chart name, chart version, and user-supplied values must equal the resolved chart and merged layers after a JSON round trip. Equal: record the apply as `Adopted` with no Helm call. Not equal: `Drift`, naming the chart and/or values; no retry until the spec or annotations change.
    - Not owned and anything else: `Drift`, `release is <status>, not deployed`; no retry until the spec or annotations change.
-10. Apply: set `phase: Applying` and write `status.releaseUID`, then install or upgrade. An owned `failed` release is upgraded when some revision is `deployed`, otherwise uninstalled and installed. Helm uses server-side apply, a 5m timeout, and no resource wait (`HookOnlyStrategy`, the same outcome as `wait: false`). A Helm error sets `phase: Failed`, `Applied=False` reason `ApplyFailed`, and retries with backoff.
+10. Apply: set `phase: Applying` and write `status.releaseUID`, then install or upgrade. An owned `failed` release is upgraded when some revision is `deployed`, otherwise uninstalled and installed. Helm uses server-side apply as field manager `llm-operator-helm`, a 5m timeout, and no resource wait (`HookOnlyStrategy`, the same outcome as `wait: false`). A Helm error sets `phase: Failed`, `Applied=False` reason `ApplyFailed`, and retries with backoff.
 
 A successful install, upgrade, or adoption writes a ControllerRevision, prepends a `status.history` entry, and sets `status.chart`, `appliedHash`, `releaseUID`, `helm`, `phase: Applied`, and `observedGeneration`.
 

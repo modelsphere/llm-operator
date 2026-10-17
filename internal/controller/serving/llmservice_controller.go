@@ -673,7 +673,7 @@ func (r *LLMServiceReconciler) event(obj client.Object, eventType, reason, msg s
 func (r *LLMServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&servingv1alpha1.LLMService{}, builder.WithPredicates(llmServicePredicate{})).
-		Named("serving-llmservice").
+		Named("llmservice").
 		Complete(r)
 }
 

@@ -32,6 +32,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -40,7 +41,8 @@ import (
 
 	autoscalingv1alpha1 "github.com/modelsphere/llm-operator/api/autoscaling/v1alpha1"
 	servingv1alpha1 "github.com/modelsphere/llm-operator/api/serving/v1alpha1"
-	controller "github.com/modelsphere/llm-operator/internal/controller/autoscaling"
+	common "github.com/modelsphere/llm-operator/internal/common"
+	scalecontroller "github.com/modelsphere/llm-operator/internal/controller/autoscaling"
 	servingcontroller "github.com/modelsphere/llm-operator/internal/controller/serving"
 	"github.com/modelsphere/llm-operator/internal/helm"
 	// +kubebuilder:scaffold:imports
@@ -200,8 +202,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&controller.LLMScalerReconciler{
-		Client: mgr.GetClient(),
+	if err := (&scalecontroller.LLMScalerReconciler{
+		Client: client.WithFieldOwner(mgr.GetClient(), common.ControllerName),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "llmscaler")
@@ -212,7 +214,7 @@ func main() {
 		setupLog.Info("LLMService installs charts from any repository; set --llmservice-allowed-chart-repos to restrict it")
 	}
 	if err := (&servingcontroller.LLMServiceReconciler{
-		Client:            mgr.GetClient(),
+		Client:            client.WithFieldOwner(mgr.GetClient(), common.ControllerName),
 		Scheme:            mgr.GetScheme(),
 		Helm:              helm.New(mgr.GetConfig(), llmserviceChartCacheDir),
 		Recorder:          mgr.GetEventRecorder("llmservice"),
@@ -220,7 +222,7 @@ func main() {
 		PendingTimeout:    llmservicePendingTimeout,
 		AllowedChartRepos: allowedChartRepos,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "serving-llmservice")
+		setupLog.Error(err, "Failed to create controller", "controller", "llmservice")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

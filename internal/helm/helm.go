@@ -19,6 +19,8 @@ import (
 	"helm.sh/helm/v4/pkg/storage/driver"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/client-go/rest"
+
+	"github.com/modelsphere/llm-operator/internal/common"
 )
 
 // ApplyTimeout is how long one helm install, upgrade, uninstall, or rollback may run.
@@ -95,6 +97,8 @@ func New(cfg *rest.Config, cacheDir string) *Client {
 	if cacheDir == "" {
 		cacheDir = defaultCacheDir()
 	}
+	// Process-wide in the Helm SDK; this package is its only caller.
+	kube.ManagedFieldsManager = common.HelmFieldManager
 	return &Client{restConfig: cfg, cacheDir: cacheDir}
 }
 
