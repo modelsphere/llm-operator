@@ -42,6 +42,17 @@ const (
 	MetricProviderCustom = "Custom"
 )
 
+// Condition types and reasons on LLMScalerStatus.Conditions.
+const (
+	// ConditionDecisionAvailable is set under the Custom provider: true when the
+	// last sync got a decision, false (with the error as message) when it held
+	// replicas instead.
+	ConditionDecisionAvailable = "DecisionAvailable"
+
+	ReasonDecisionReceived    = "DecisionReceived"
+	ReasonDecisionUnavailable = "DecisionUnavailable"
+)
+
 // CustomProviderSpec configures the "Custom" metric provider: an external
 // decision server that replaces Prometheus and hands back a replica count
 // directly, rather than a measurement to divide by a target.

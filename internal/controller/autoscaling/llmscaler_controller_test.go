@@ -29,6 +29,7 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -653,6 +654,9 @@ var _ = Describe("LLMScaler Controller", func() {
 			scaler := &autoscalingv1alpha1.LLMScaler{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, scaler)).To(Succeed())
 			Expect(scaler.Status.DesiredReplicas).To(Equal(int32(4)))
+			cond := meta.FindStatusCondition(scaler.Status.Conditions, autoscalingv1alpha1.ConditionDecisionAvailable)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 		})
 
 		It("should hold replicas when the decision server is unreachable", func() {
@@ -684,6 +688,15 @@ var _ = Describe("LLMScaler Controller", func() {
 			By("checking the Deployment was left where it was, not collapsed to minReplicas")
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: targetDeployName, Namespace: scalerNamespace}, deploy)).To(Succeed())
 			Expect(*deploy.Spec.Replicas).To(Equal(three))
+
+			By("checking the failure is reported on the status")
+			scaler := &autoscalingv1alpha1.LLMScaler{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, scaler)).To(Succeed())
+			cond := meta.FindStatusCondition(scaler.Status.Conditions, autoscalingv1alpha1.ConditionDecisionAvailable)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal(autoscalingv1alpha1.ReasonDecisionUnavailable))
+			Expect(cond.Message).NotTo(BeEmpty())
 		})
 
 		It("should reject a Custom scaler with no customProvider", func() {

@@ -33,6 +33,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -532,13 +534,28 @@ func (r *LLMScalerReconciler) desiredFromCustomProvider(ctx context.Context, sca
 	replicas, err := queryDecisionReplicas(scaler.Spec.ServerAddress, provider.Path,
 		provider.ServiceID, provider.Namespace, scaler.Spec.ServerHeaders)
 	if err != nil {
-		logger.Error(err, "Failed to fetch a decision from the custom metric provider",
-			"serverAddress", scaler.Spec.ServerAddress, "serviceId", provider.ServiceID)
+		// Expected while the decision server has not caught up with a new
+		// service, so no error-level stack trace; the condition carries it.
+		logger.Info("No decision from the custom metric provider; holding replicas",
+			"serverAddress", scaler.Spec.ServerAddress, "serviceId", provider.ServiceID, "error", err.Error())
+		setDecisionCondition(scaler, metav1.ConditionFalse, autoscalingv1alpha1.ReasonDecisionUnavailable, err.Error())
 		return 0, false
 	}
 
 	logger.Info("Custom provider decision", "serviceId", provider.ServiceID, "calculatedDesired", replicas)
+	setDecisionCondition(scaler, metav1.ConditionTrue, autoscalingv1alpha1.ReasonDecisionReceived,
+		fmt.Sprintf("decision server recommends %d replicas", replicas))
 	return replicas, true
+}
+
+func setDecisionCondition(scaler *autoscalingv1alpha1.LLMScaler, status metav1.ConditionStatus, reason, msg string) {
+	meta.SetStatusCondition(&scaler.Status.Conditions, metav1.Condition{
+		Type:               autoscalingv1alpha1.ConditionDecisionAvailable,
+		Status:             status,
+		Reason:             reason,
+		Message:            msg,
+		ObservedGeneration: scaler.Generation,
+	})
 }
 
 // markColdestPodsForDeletion biases the ReplicaSet toward removing the
