@@ -1,0 +1,22 @@
+name: past-grace-on-a-notready-node-is-stuck
+description: past grace a pod on a NotReady node is gone and stuck
+inputs:
+  now: "2026-01-02T03:04:05Z"
+  nodesOK: true
+  nodes:
+    - name: gpu-7
+      ready: false
+  pods:
+    - name: engine
+      phase: Running
+      node: gpu-7
+      grace: 30
+      deletionTimestamp: "2026-01-02T03:03:00Z"
+expected:
+  remaining: 0
+  pods:
+    - name: engine
+      stuck: true
+      phase: Running
+      node: gpu-7
+      grace: 30

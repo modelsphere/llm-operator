@@ -1,0 +1,46 @@
+name: treats-a-pod-stuck-on-a-notready-node-as-gone-past-grace
+description: treats a pod stuck on a NotReady node as gone past grace
+steps:
+  - action: setNode
+    node:
+      name: gpu-7
+      ready: false
+  - action: create
+    version: "0.8.6"
+    finalizers:
+      - serving.modelsphere.dev/finalizer
+  - action: putRelease
+    release:
+      owned: true
+      revision: 1
+      status: deployed
+  - action: addPod
+    pod:
+      name: engine
+      phase: Running
+      node: gpu-7
+      grace: 600
+      deletionTimestamp: 0s
+  - action: delete
+  - action: reconcile
+    expect:
+      uninstalls: 1
+      finalizer: present
+      deletion:
+        stage: PodsTerminating
+        podsRemaining: 1
+        pods:
+          - name: engine
+            node: gpu-7
+            stuck: false
+            grace: 600
+      requeue:
+        exact: 5s
+  - action: advanceClock
+    advance: 601s
+  - action: reconcile
+    expect:
+      notFound: true
+      clusterPods:
+        - name: engine
+          notFound: false

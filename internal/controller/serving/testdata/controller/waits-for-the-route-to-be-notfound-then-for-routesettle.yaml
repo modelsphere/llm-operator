@@ -1,0 +1,53 @@
+name: waits-for-the-route-to-be-notfound-then-for-routesettle
+description: waits for the route to be NotFound, then for routeSettle
+steps:
+  - action: create
+    version: "0.8.6"
+    finalizers:
+      - serving.modelsphere.dev/finalizer
+  - action: putRelease
+    release:
+      owned: true
+      revision: 1
+      status: deployed
+      manifest: |
+        apiVersion: routing.modelsphere.dev/v1alpha1
+        kind: ModelRoute
+        metadata:
+          name: qwen
+  - action: addRoute
+    route:
+      name: qwen
+      finalizers:
+        - routing.modelsphere.dev/cleanup
+  - action: delete
+  - action: reconcile
+    expect:
+      uninstalls: 0
+      deletion:
+        stage: RouteRemoving
+  - action: clearRouteFinalizer
+    route:
+      name: qwen
+  - action: reconcile
+    expect:
+      uninstalls: 0
+      phase: Deleting
+      finalizer: present
+      requeue:
+        exact: 60s
+      deletion:
+        stage: RouteSettling
+        routeRemovedAt: true
+        message:
+          equals: waiting for the ModelRoute to settle
+      route:
+        notFound: true
+  - action: advanceClock
+    advance: 60s
+  - action: reconcile
+    expect:
+      uninstalls: 1
+      notFound: true
+      eventsContain:
+        - Uninstalled

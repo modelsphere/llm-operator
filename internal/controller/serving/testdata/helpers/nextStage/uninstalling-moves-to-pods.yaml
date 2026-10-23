@@ -1,0 +1,7 @@
+name: uninstalling-moves-to-pods
+description: a recorded uninstall moves to PodsTerminating
+inputs:
+  stage: Uninstalling
+  uninstalled: true
+expected:
+  stage: PodsTerminating

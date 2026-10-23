@@ -1,0 +1,30 @@
+name: selects-both-routing-groups
+description: both routing groups are selected around blank documents
+inputs:
+  namespace: ns
+  manifest: |
+    ---
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: qwen
+    ---
+    apiVersion: routing.modelsphere.dev/v1alpha1
+    kind: ModelRoute
+    metadata:
+      name: a
+    ---
+    ---
+    apiVersion: routing.gpucluster.io/v1alpha1
+    kind: ModelRoute
+    metadata:
+      name: b
+      namespace: other
+expected:
+  routes:
+    - apiVersion: routing.modelsphere.dev/v1alpha1
+      namespace: ns
+      name: a
+    - apiVersion: routing.gpucluster.io/v1alpha1
+      namespace: other
+      name: b

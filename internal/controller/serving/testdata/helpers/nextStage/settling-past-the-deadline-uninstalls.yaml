@@ -1,0 +1,7 @@
+name: settling-past-the-deadline-uninstalls
+description: RouteSettling skips the rest of the wait past the deadline
+inputs:
+  stage: RouteSettling
+  pastDeadline: true
+expected:
+  stage: Uninstalling

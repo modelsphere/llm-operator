@@ -1,0 +1,9 @@
+name: spec-zero-is-kept
+description: an explicit 0s spec maxWait or routeSettle is a real zero, not the default
+inputs:
+  maxWait: 0s
+  routeSettle: 0s
+expected:
+  maxWait: 0s
+  routeSettle: 0s
+  forceOff: true

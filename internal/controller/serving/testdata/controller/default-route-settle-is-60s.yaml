@@ -1,0 +1,28 @@
+name: default-route-settle-is-60s
+description: the default routeSettle is 60s
+steps:
+  - action: create
+    version: "0.8.6"
+    finalizers:
+      - serving.modelsphere.dev/finalizer
+  - action: putRelease
+    release:
+      owned: true
+      revision: 1
+      status: deployed
+      manifest: |
+        apiVersion: routing.modelsphere.dev/v1alpha1
+        kind: ModelRoute
+        metadata:
+          name: qwen
+  - action: addRoute
+    route:
+      name: qwen
+  - action: delete
+  - action: reconcile
+    expect:
+      uninstalls: 0
+      deletion:
+        stage: RouteSettling
+      requeue:
+        exact: 60s

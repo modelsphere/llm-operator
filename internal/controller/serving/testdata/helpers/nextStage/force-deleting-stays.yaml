@@ -1,0 +1,8 @@
+name: force-deleting-stays
+description: ForceDeleting stays while pods remain inside the deadline
+inputs:
+  stage: ForceDeleting
+  podsRemaining: 1
+  forceDue: true
+expected:
+  stage: ForceDeleting

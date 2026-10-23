@@ -1,0 +1,22 @@
+name: past-grace-on-a-ready-node-still-counts
+description: past grace a pod on a Ready node still counts until grace plus 5m
+inputs:
+  now: "2026-01-02T03:04:05Z"
+  nodesOK: true
+  nodes:
+    - name: gpu-7
+      ready: true
+  pods:
+    - name: engine
+      phase: Running
+      node: gpu-7
+      grace: 30
+      deletionTimestamp: "2026-01-02T03:03:00Z"
+expected:
+  remaining: 1
+  pods:
+    - name: engine
+      stuck: false
+      phase: Running
+      node: gpu-7
+      grace: 30

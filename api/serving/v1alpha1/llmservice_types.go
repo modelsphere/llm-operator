@@ -68,7 +68,46 @@ const (
 	// The only value is DeletionPolicyOrphan.
 	AnnotationDeletionPolicy = "serving.modelsphere.dev/deletion-policy"
 	// DeletionPolicyOrphan drops the finalizer without uninstalling the release.
+	// The ModelRoute and the pods are left as they are.
 	DeletionPolicyOrphan = "Orphan"
+
+	// AnnotationDeletionMaxWait overrides spec.deletion.maxWait for one object.
+	// It is read on every reconcile while the object is deleting.
+	AnnotationDeletionMaxWait = "serving.modelsphere.dev/deletion-max-wait"
+	// AnnotationRouteSettle overrides spec.deletion.routeSettle.
+	AnnotationRouteSettle = "serving.modelsphere.dev/route-settle"
+	// AnnotationForceDeleteAfter overrides spec.deletion.forceDeleteAfter.
+	// A value of 0s force-deletes a pod as soon as it has a deletionTimestamp.
+	AnnotationForceDeleteAfter = "serving.modelsphere.dev/force-delete-after"
+
+	// ConditionDeleting is true while a deleting LLMService still has its finalizer.
+	ConditionDeleting = "Deleting"
+
+	// ReasonRouteRemoving means the ModelRoute from the release is being deleted.
+	ReasonRouteRemoving = "RouteRemoving"
+	// ReasonRouteSettling means the ModelRoute is gone and routes are settling.
+	ReasonRouteSettling = "RouteSettling"
+	// ReasonRouteStuck means the ModelRoute was still present when the budget elapsed.
+	// Its finalizer is left in place.
+	ReasonRouteStuck = "RouteStuck"
+	// ReasonNoRoute means the release manifest had no ModelRoute.
+	ReasonNoRoute = "NoRoute"
+	// ReasonUninstalled means the helm release was uninstalled.
+	ReasonUninstalled = "Uninstalled"
+	// ReasonWaitingForPods means release pods are still present.
+	ReasonWaitingForPods = "WaitingForPods"
+	// ReasonPodsForceDeleted means at least one pod was force-deleted.
+	ReasonPodsForceDeleted = "PodsForceDeleted"
+	// ReasonTimedOut means the deletion budget elapsed while pods were still present.
+	ReasonTimedOut = "TimedOut"
+	// ReasonReleased means staged deletion finished and the finalizer can drop.
+	ReasonReleased = "Released"
+	// ReasonInvalidAnnotation means a deletion annotation could not be parsed.
+	ReasonInvalidAnnotation = "InvalidAnnotation"
+	// ReasonPodForceDeleted means one pod was deleted with a zero grace period.
+	ReasonPodForceDeleted = "PodForceDeleted"
+	// ReasonKeptRelease means deletion left a helm release this object does not own.
+	ReasonKeptRelease = "KeptRelease"
 
 	// AnnotationForceConflicts, set to a generation, lets that generation's
 	// apply take fields other managers own. Any other generation ignores it.
@@ -99,6 +138,8 @@ const (
 	PhaseApplied Phase = "Applied"
 	// PhaseFailed means the last reconcile stopped on an error.
 	PhaseFailed Phase = "Failed"
+	// PhaseDeleting means the object is deleting and staged teardown is in progress.
+	PhaseDeleting Phase = "Deleting"
 )
 
 // LocalObjectReference names an object in the LLMService's namespace.
@@ -195,9 +236,83 @@ type LLMServiceSpec struct {
 	Model *ModelSpec `json:"model,omitempty"`
 
 	// suspend stops reconciliation. The status keeps the last outcome.
+	// Suspend wins over deletion: a suspended object that is deleting is left
+	// as it is, including its finalizer.
 	// +optional
 	Suspend bool `json:"suspend,omitempty"`
+
+	// deletion tunes staged teardown. Annotations on the object override these
+	// fields, and an unset field uses the built-in default. An explicit 0s is
+	// a real zero (routeSettle 0s skips the settle wait).
+	// +optional
+	Deletion *DeletionSpec `json:"deletion,omitempty"`
 }
+
+// DeletionSpec tunes staged deletion of an LLMService.
+type DeletionSpec struct {
+	// maxWait is the budget for holding the finalizer, measured from
+	// status.deletion.startedAt. Past it, remaining waits are skipped and the
+	// finalizer is dropped. The annotation
+	// serving.modelsphere.dev/deletion-max-wait overrides this on every pass.
+	// +kubebuilder:default="1h"
+	// +kubebuilder:validation:Format=duration
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('0s')",message="maxWait must be a non-negative duration"
+	// +optional
+	MaxWait *metav1.Duration `json:"maxWait,omitempty"`
+
+	// routeSettle is how long to wait after the ModelRoute is gone so the
+	// gateway can drop it before the Services disappear. 0, via the
+	// annotation serving.modelsphere.dev/route-settle, skips the wait. The
+	// built-in default is 60s.
+	// +kubebuilder:default="60s"
+	// +kubebuilder:validation:Format=duration
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('0s')",message="routeSettle must be a non-negative duration"
+	// +optional
+	RouteSettle *metav1.Duration `json:"routeSettle,omitempty"`
+
+	// forceDeleteAfter force-deletes pods that have been terminating for this
+	// long, with gracePeriodSeconds 0. The wait starts when deletion was
+	// requested. Unset leaves the pods to the kubelet. The annotation
+	// serving.modelsphere.dev/force-delete-after overrides this.
+	// +kubebuilder:validation:Format=duration
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('0s')",message="forceDeleteAfter must be a non-negative duration"
+	// +optional
+	ForceDeleteAfter *metav1.Duration `json:"forceDeleteAfter,omitempty"`
+}
+
+// DeletionStage is the monotonic stage of a staged deletion.
+type DeletionStage string
+
+const (
+	// DeletionStageRouteRemoving deletes the ModelRoute and waits for it to go.
+	DeletionStageRouteRemoving DeletionStage = "RouteRemoving"
+	// DeletionStageRouteSettling waits after the ModelRoute is NotFound.
+	DeletionStageRouteSettling DeletionStage = "RouteSettling"
+	// DeletionStageUninstalling uninstalls the helm release.
+	DeletionStageUninstalling DeletionStage = "Uninstalling"
+	// DeletionStagePodsTerminating waits for the release's pods to go.
+	DeletionStagePodsTerminating DeletionStage = "PodsTerminating"
+	// DeletionStageForceDeleting force-deletes pods past forceDeleteAfter.
+	DeletionStageForceDeleting DeletionStage = "ForceDeleting"
+	// DeletionStageReleased means the finalizer may be dropped.
+	DeletionStageReleased DeletionStage = "Released"
+)
+
+// DeletionOutcome is how staged deletion finished.
+type DeletionOutcome string
+
+const (
+	// DeletionOutcomeClean means every stage finished inside the budget.
+	DeletionOutcomeClean DeletionOutcome = "Clean"
+	// DeletionOutcomeNoRoute means the release manifest had no ModelRoute.
+	DeletionOutcomeNoRoute DeletionOutcome = "NoRoute"
+	// DeletionOutcomeRouteStuck means the ModelRoute was still present at the deadline.
+	DeletionOutcomeRouteStuck DeletionOutcome = "RouteStuck"
+	// DeletionOutcomePodsForceDeleted means at least one pod was force-deleted.
+	DeletionOutcomePodsForceDeleted DeletionOutcome = "PodsForceDeleted"
+	// DeletionOutcomeTimedOut means the budget elapsed while pods were still present.
+	DeletionOutcomeTimedOut DeletionOutcome = "TimedOut"
+)
 
 // ChartStatus is the chart spec.chart.version resolved to.
 type ChartStatus struct {
@@ -270,8 +385,8 @@ type LLMServiceStatus struct {
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// phase is the current reconciliation phase: Pending, Applying, Applied,
-	// or Failed.
-	// +kubebuilder:validation:Enum=Pending;Applying;Applied;Failed
+	// Failed, or Deleting.
+	// +kubebuilder:validation:Enum=Pending;Applying;Applied;Failed;Deleting
 	// +optional
 	Phase Phase `json:"phase,omitempty"`
 
@@ -311,6 +426,91 @@ type LLMServiceStatus struct {
 	// recent DefaultHistoryLimit (10) entries.
 	// +optional
 	History []HistoryEntry `json:"history,omitempty"`
+
+	// deletion is the staged teardown observed while the object is deleting.
+	// +optional
+	Deletion *DeletionStatus `json:"deletion,omitempty"`
+}
+
+// DeletionStatus is the observed staged teardown of an LLMService.
+type DeletionStatus struct {
+	// stage is the current teardown stage. It only moves forward.
+	// +kubebuilder:validation:Enum=RouteRemoving;RouteSettling;Uninstalling;PodsTerminating;ForceDeleting;Released
+	// +optional
+	Stage DeletionStage `json:"stage,omitempty"`
+
+	// outcome is how teardown finished, or the non-clean result already known.
+	// +kubebuilder:validation:Enum=Clean;NoRoute;RouteStuck;PodsForceDeleted;TimedOut
+	// +optional
+	Outcome DeletionOutcome `json:"outcome,omitempty"`
+
+	// startedAt is when staged deletion began.
+	// +optional
+	StartedAt *metav1.Time `json:"startedAt,omitempty"`
+
+	// deadline is startedAt plus the effective maxWait. It is recomputed when
+	// the annotation or the spec changes.
+	// +optional
+	Deadline *metav1.Time `json:"deadline,omitempty"`
+
+	// routeRemovedAt is when the ModelRoute was first observed NotFound.
+	// +optional
+	RouteRemovedAt *metav1.Time `json:"routeRemovedAt,omitempty"`
+
+	// uninstalledAt is when the helm uninstall succeeded.
+	// +optional
+	UninstalledAt *metav1.Time `json:"uninstalledAt,omitempty"`
+
+	// podsGoneAt is when no release pods were left to wait for.
+	// +optional
+	PodsGoneAt *metav1.Time `json:"podsGoneAt,omitempty"`
+
+	// podsRemaining is how many release pods still block the finalizer.
+	// +optional
+	PodsRemaining int32 `json:"podsRemaining,omitempty"`
+
+	// pods are the release pods still in the API, ignoring Succeeded and Failed.
+	// The list is capped at 20.
+	// +kubebuilder:validation:MaxItems=20
+	// +optional
+	Pods []DeletionPod `json:"pods,omitempty"`
+
+	// forceDeleted are pod names deleted with gracePeriodSeconds 0. Capped at 20.
+	// +kubebuilder:validation:MaxItems=20
+	// +optional
+	ForceDeleted []string `json:"forceDeleted,omitempty"`
+
+	// message is a human-readable line, for example
+	// "waiting for 3 pods (2 stuck on NotReady node gpu-7)".
+	// +optional
+	Message string `json:"message,omitempty"`
+}
+
+// DeletionPod is one release pod observed during teardown.
+type DeletionPod struct {
+	// name of the pod.
+	Name string `json:"name"`
+
+	// phase is the pod phase.
+	// +optional
+	Phase string `json:"phase,omitempty"`
+
+	// node is the node the pod is assigned to.
+	// +optional
+	Node string `json:"node,omitempty"`
+
+	// deletionTimestamp is the pod's metadata.deletionTimestamp.
+	// +optional
+	DeletionTimestamp *metav1.Time `json:"deletionTimestamp,omitempty"`
+
+	// grace is the pod's terminationGracePeriodSeconds. 30 when the pod does not set one.
+	// +optional
+	Grace int64 `json:"grace,omitempty"`
+
+	// stuck is true when the pod is past its grace on a NotReady or missing
+	// node, or past grace plus 5m, and no longer blocks the finalizer.
+	// +optional
+	Stuck bool `json:"stuck,omitempty"`
 }
 
 // +kubebuilder:object:root=true

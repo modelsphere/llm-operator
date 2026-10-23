@@ -1,0 +1,8 @@
+name: released-stays
+description: Released does not move
+inputs:
+  stage: Released
+  hasRoute: true
+  podsRemaining: 3
+expected:
+  stage: Released

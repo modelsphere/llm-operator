@@ -1,0 +1,15 @@
+name: suspend-keeps-the-finalizer
+description: suspend keeps the finalizer
+steps:
+  - action: create
+    version: "0.8.6"
+  - action: reconcile
+    expect: {}
+  - action: update
+    suspend: true
+  - action: delete
+  - action: reconcile
+    expect:
+      uninstalls: 0
+      getsUnchanged: true
+      finalizer: present

@@ -1,0 +1,15 @@
+name: annotation-zero-is-kept
+description: an annotation of 0s is a real zero
+inputs:
+  annotations:
+    serving.modelsphere.dev/deletion-max-wait: 0s
+    serving.modelsphere.dev/route-settle: 0s
+    serving.modelsphere.dev/force-delete-after: 0s
+  maxWait: 2h
+  routeSettle: 30s
+  forceSet: true
+  forceDeleteAfter: 10s
+expected:
+  maxWait: 0s
+  routeSettle: 0s
+  forceDeleteAfter: 0s

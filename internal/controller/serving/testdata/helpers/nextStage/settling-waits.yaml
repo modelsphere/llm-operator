@@ -1,0 +1,6 @@
+name: settling-waits
+description: RouteSettling stays until the wait is over
+inputs:
+  stage: RouteSettling
+expected:
+  stage: RouteSettling

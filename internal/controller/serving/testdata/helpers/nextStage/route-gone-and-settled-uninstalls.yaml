@@ -1,0 +1,9 @@
+name: route-gone-and-settled-uninstalls
+description: a removed route whose settle wait is over uninstalls
+inputs:
+  stage: RouteRemoving
+  hasRoute: true
+  routeGone: true
+  settleDone: true
+expected:
+  stage: Uninstalling

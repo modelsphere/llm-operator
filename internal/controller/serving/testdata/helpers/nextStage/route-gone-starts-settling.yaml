@@ -1,0 +1,8 @@
+name: route-gone-starts-settling
+description: a removed route waits for routeSettle
+inputs:
+  stage: RouteRemoving
+  hasRoute: true
+  routeGone: true
+expected:
+  stage: RouteSettling

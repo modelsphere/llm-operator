@@ -1,0 +1,7 @@
+name: defaults-when-unset
+description: an empty spec uses the built-in defaults and leaves force-delete off
+inputs: {}
+expected:
+  maxWait: 1h
+  routeSettle: 60s
+  forceOff: true

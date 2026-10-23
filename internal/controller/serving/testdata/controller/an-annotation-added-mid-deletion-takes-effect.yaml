@@ -1,0 +1,43 @@
+name: an-annotation-added-mid-deletion-takes-effect
+description: an annotation added mid-deletion takes effect on the next pass
+steps:
+  - action: create
+    version: "0.8.6"
+    finalizers:
+      - serving.modelsphere.dev/finalizer
+  - action: putRelease
+    release:
+      owned: true
+      revision: 1
+      status: deployed
+      manifest: |
+        apiVersion: routing.modelsphere.dev/v1alpha1
+        kind: ModelRoute
+        metadata:
+          name: qwen
+  - action: addRoute
+    route:
+      name: qwen
+      finalizers:
+        - routing.modelsphere.dev/cleanup
+  - action: delete
+  - action: reconcile
+    expect:
+      uninstalls: 0
+      deletion:
+        stage: RouteRemoving
+      requeue:
+        exact: 5s
+  - action: annotate
+    annotations:
+      serving.modelsphere.dev/deletion-max-wait: 0s
+  - action: reconcile
+    expect:
+      uninstalls: 1
+      notFound: true
+      eventsContain:
+        - RouteStuck
+      route:
+        deleting: true
+        finalizers:
+          - routing.modelsphere.dev/cleanup

@@ -1,0 +1,19 @@
+name: unreadable-nodes-use-only-the-time-rule
+description: when nodes cannot be listed only the time rule applies
+inputs:
+  now: "2026-01-02T03:04:05Z"
+  nodesOK: false
+  pods:
+    - name: engine
+      phase: Running
+      node: gpu-7
+      grace: 30
+      deletionTimestamp: "2026-01-02T03:03:00Z"
+expected:
+  remaining: 1
+  pods:
+    - name: engine
+      stuck: false
+      phase: Running
+      node: gpu-7
+      grace: 30

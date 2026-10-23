@@ -1,0 +1,5 @@
+name: empty-without-a-route
+description: a manifest without a ModelRoute starts at Uninstalling
+inputs: {}
+expected:
+  stage: Uninstalling

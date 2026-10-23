@@ -1,0 +1,18 @@
+name: ignores-succeeded-and-failed
+description: Succeeded and Failed pods are ignored
+inputs:
+  now: "2026-01-02T03:04:05Z"
+  nodesOK: true
+  nodes:
+    - name: gpu-7
+      ready: true
+  pods:
+    - name: bad
+      phase: Failed
+      node: gpu-7
+    - name: done
+      phase: Succeeded
+      node: gpu-7
+expected:
+  remaining: 0
+  pods: []

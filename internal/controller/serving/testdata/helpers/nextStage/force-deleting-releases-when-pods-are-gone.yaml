@@ -1,0 +1,7 @@
+name: force-deleting-releases-when-pods-are-gone
+description: ForceDeleting releases when no pods remain
+inputs:
+  stage: ForceDeleting
+  forceDue: true
+expected:
+  stage: Released

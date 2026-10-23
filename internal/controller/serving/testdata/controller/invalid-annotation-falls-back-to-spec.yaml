@@ -1,0 +1,34 @@
+name: invalid-annotation-falls-back-to-spec
+description: an invalid annotation falls back to spec
+steps:
+  - action: create
+    version: "0.8.6"
+    finalizers:
+      - serving.modelsphere.dev/finalizer
+    annotations:
+      serving.modelsphere.dev/route-settle: nope
+    deletion:
+      routeSettle: 15s
+  - action: putRelease
+    release:
+      owned: true
+      revision: 1
+      status: deployed
+      manifest: |
+        apiVersion: routing.modelsphere.dev/v1alpha1
+        kind: ModelRoute
+        metadata:
+          name: qwen
+  - action: addRoute
+    route:
+      name: qwen
+  - action: delete
+  - action: reconcile
+    expect:
+      uninstalls: 0
+      deletion:
+        stage: RouteSettling
+      requeue:
+        exact: 15s
+      eventsContain:
+        - InvalidAnnotation

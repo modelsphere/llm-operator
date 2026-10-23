@@ -26,13 +26,16 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -52,28 +55,33 @@ type serviceCase struct {
 }
 
 type serviceStep struct {
-	Action         string            `json:"action"`
-	FreshNamespace bool              `json:"freshNamespace,omitempty"`
-	Name           string            `json:"name,omitempty"`
-	Version        string            `json:"version,omitempty"`
-	Annotations    map[string]string `json:"annotations,omitempty"`
-	Finalizers     []string          `json:"finalizers,omitempty"`
-	ChartVersion   *string           `json:"chartVersion,omitempty"`
-	Suspend        *bool             `json:"suspend,omitempty"`
-	Layers         []layerSpec       `json:"layers,omitempty"`
-	Release        *releaseSpec      `json:"release,omitempty"`
-	Entries        []releaseSpec     `json:"entries,omitempty"`
-	Put            string            `json:"put,omitempty"`
-	Versions       []string          `json:"versions,omitempty"`
-	ListErr        *string           `json:"listErr,omitempty"`
-	InstallErr     *string           `json:"installErr,omitempty"`
-	UpgradeErr     *string           `json:"upgradeErr,omitempty"`
-	GetErr         *string           `json:"getErr,omitempty"`
-	KeepFailed     *bool             `json:"keepFailed,omitempty"`
-	Repos          []string          `json:"repos,omitempty"`
-	Status         *statusSpec       `json:"status,omitempty"`
-	Capture        []string          `json:"capture,omitempty"`
-	Expect         *expectSpec       `json:"expect,omitempty"`
+	Action         string             `json:"action"`
+	FreshNamespace bool               `json:"freshNamespace,omitempty"`
+	Name           string             `json:"name,omitempty"`
+	Version        string             `json:"version,omitempty"`
+	Annotations    map[string]string  `json:"annotations,omitempty"`
+	Finalizers     []string           `json:"finalizers,omitempty"`
+	ChartVersion   *string            `json:"chartVersion,omitempty"`
+	Suspend        *bool              `json:"suspend,omitempty"`
+	Layers         []layerSpec        `json:"layers,omitempty"`
+	Release        *releaseSpec       `json:"release,omitempty"`
+	Entries        []releaseSpec      `json:"entries,omitempty"`
+	Put            string             `json:"put,omitempty"`
+	Versions       []string           `json:"versions,omitempty"`
+	ListErr        *string            `json:"listErr,omitempty"`
+	InstallErr     *string            `json:"installErr,omitempty"`
+	UpgradeErr     *string            `json:"upgradeErr,omitempty"`
+	GetErr         *string            `json:"getErr,omitempty"`
+	KeepFailed     *bool              `json:"keepFailed,omitempty"`
+	Repos          []string           `json:"repos,omitempty"`
+	Status         *statusSpec        `json:"status,omitempty"`
+	Capture        []string           `json:"capture,omitempty"`
+	Expect         *expectSpec        `json:"expect,omitempty"`
+	Deletion       *deletionSpecInput `json:"deletion,omitempty"`
+	Pod            *podInput          `json:"pod,omitempty"`
+	Node           *nodeInput         `json:"node,omitempty"`
+	Route          *routeInput        `json:"route,omitempty"`
+	Advance        *cases.Duration    `json:"advance,omitempty"`
 }
 
 type layerSpec struct {
@@ -91,11 +99,50 @@ type releaseSpec struct {
 	Owned        bool              `json:"owned,omitempty"`
 	Slot         bool              `json:"slot,omitempty"`
 	Updated      *cases.Duration   `json:"updated,omitempty"`
+	Manifest     string            `json:"manifest,omitempty"`
+}
+
+type deletionSpecInput struct {
+	MaxWait          *cases.Duration `json:"maxWait,omitempty"`
+	RouteSettle      *cases.Duration `json:"routeSettle,omitempty"`
+	ForceDeleteAfter *cases.Duration `json:"forceDeleteAfter,omitempty"`
+}
+
+type podInput struct {
+	Name              string            `json:"name"`
+	Phase             string            `json:"phase,omitempty"`
+	Node              string            `json:"node,omitempty"`
+	Grace             *int64            `json:"grace,omitempty"`
+	DeletionTimestamp *cases.Duration   `json:"deletionTimestamp,omitempty"`
+	Labels            map[string]string `json:"labels,omitempty"`
+}
+
+type nodeInput struct {
+	Name  string `json:"name"`
+	Ready bool   `json:"ready,omitempty"`
+}
+
+type routeInput struct {
+	Name       string   `json:"name,omitempty"`
+	Finalizers []string `json:"finalizers,omitempty"`
 }
 
 type statusSpec struct {
-	Phase      string          `json:"phase,omitempty"`
-	Conditions []conditionSpec `json:"conditions,omitempty"`
+	Phase      string               `json:"phase,omitempty"`
+	ChartName  string               `json:"chartName,omitempty"`
+	Conditions []conditionSpec      `json:"conditions,omitempty"`
+	Deletion   *deletionStatusInput `json:"deletion,omitempty"`
+}
+
+type deletionStatusInput struct {
+	Stage          string          `json:"stage,omitempty"`
+	Outcome        string          `json:"outcome,omitempty"`
+	Message        string          `json:"message,omitempty"`
+	StartedAt      *cases.Duration `json:"startedAt,omitempty"`
+	RouteRemovedAt *cases.Duration `json:"routeRemovedAt,omitempty"`
+	UninstalledAt  *cases.Duration `json:"uninstalledAt,omitempty"`
+	PodsGoneAt     *cases.Duration `json:"podsGoneAt,omitempty"`
+	PodsRemaining  *int32          `json:"podsRemaining,omitempty"`
 }
 
 type conditionSpec struct {
@@ -108,41 +155,45 @@ type conditionSpec struct {
 }
 
 type expectSpec struct {
-	Mid                  *expectSpec      `json:"mid,omitempty"`
-	Error                *bool            `json:"error,omitempty"`
-	ErrorContains        string           `json:"errorContains,omitempty"`
-	Installs             *int             `json:"installs,omitempty"`
-	Upgrades             *int             `json:"upgrades,omitempty"`
-	Gets                 *int             `json:"gets,omitempty"`
-	Uninstalls           *int             `json:"uninstalls,omitempty"`
-	Rollbacks            *int             `json:"rollbacks,omitempty"`
-	LastRollback         *int             `json:"lastRollback,omitempty"`
-	HelmTouched          *int             `json:"helmTouched,omitempty"`
-	ListCalls            *int             `json:"listCalls,omitempty"`
-	LastForce            *bool            `json:"lastForce,omitempty"`
-	GetsUnchanged        *bool            `json:"getsUnchanged,omitempty"`
-	UpgradesUnchanged    *bool            `json:"upgradesUnchanged,omitempty"`
-	Phase                string           `json:"phase,omitempty"`
-	ChartVersion         string           `json:"chartVersion,omitempty"`
-	ReResolve            *string          `json:"reResolve,omitempty"`
-	AppliedHash          *hashExpect      `json:"appliedHash,omitempty"`
-	HelmRevision         *int             `json:"helmRevision,omitempty"`
-	ObservedGeneration   string           `json:"observedGeneration,omitempty"`
-	Generation           *int64           `json:"generation,omitempty"`
-	History              *historyExpect   `json:"history,omitempty"`
-	Conditions           []conditionSpec  `json:"conditions,omitempty"`
-	ReleaseUID           string           `json:"releaseUID,omitempty"`
-	Release              *releaseExpect   `json:"release,omitempty"`
-	NotFound             *bool            `json:"notFound,omitempty"`
-	Message              *messageExpect   `json:"message,omitempty"`
-	DistinctRevisions    *int             `json:"distinctRevisions,omitempty"`
-	Snapshots            []snapshotExpect `json:"snapshots,omitempty"`
-	Requeue              *requeueExpect   `json:"requeue,omitempty"`
-	EventContains        string           `json:"eventContains,omitempty"`
-	Finalizer            string           `json:"finalizer,omitempty"`
-	PlantedRevisionUsed  *bool            `json:"plantedRevisionUsed,omitempty"`
-	CapturedRevisionGone *bool            `json:"capturedRevisionGone,omitempty"`
-	LatestRevisionExists *bool            `json:"latestRevisionExists,omitempty"`
+	Mid                  *expectSpec        `json:"mid,omitempty"`
+	Error                *bool              `json:"error,omitempty"`
+	ErrorContains        string             `json:"errorContains,omitempty"`
+	Installs             *int               `json:"installs,omitempty"`
+	Upgrades             *int               `json:"upgrades,omitempty"`
+	Gets                 *int               `json:"gets,omitempty"`
+	Uninstalls           *int               `json:"uninstalls,omitempty"`
+	Rollbacks            *int               `json:"rollbacks,omitempty"`
+	LastRollback         *int               `json:"lastRollback,omitempty"`
+	HelmTouched          *int               `json:"helmTouched,omitempty"`
+	ListCalls            *int               `json:"listCalls,omitempty"`
+	LastForce            *bool              `json:"lastForce,omitempty"`
+	GetsUnchanged        *bool              `json:"getsUnchanged,omitempty"`
+	UpgradesUnchanged    *bool              `json:"upgradesUnchanged,omitempty"`
+	Phase                string             `json:"phase,omitempty"`
+	ChartVersion         string             `json:"chartVersion,omitempty"`
+	ReResolve            *string            `json:"reResolve,omitempty"`
+	AppliedHash          *hashExpect        `json:"appliedHash,omitempty"`
+	HelmRevision         *int               `json:"helmRevision,omitempty"`
+	ObservedGeneration   string             `json:"observedGeneration,omitempty"`
+	Generation           *int64             `json:"generation,omitempty"`
+	History              *historyExpect     `json:"history,omitempty"`
+	Conditions           []conditionSpec    `json:"conditions,omitempty"`
+	ReleaseUID           string             `json:"releaseUID,omitempty"`
+	Release              *releaseExpect     `json:"release,omitempty"`
+	NotFound             *bool              `json:"notFound,omitempty"`
+	Message              *messageExpect     `json:"message,omitempty"`
+	DistinctRevisions    *int               `json:"distinctRevisions,omitempty"`
+	Snapshots            []snapshotExpect   `json:"snapshots,omitempty"`
+	Requeue              *requeueExpect     `json:"requeue,omitempty"`
+	EventContains        string             `json:"eventContains,omitempty"`
+	EventsContain        []string           `json:"eventsContain,omitempty"`
+	Finalizer            string             `json:"finalizer,omitempty"`
+	Deletion             *deletionExpect    `json:"deletion,omitempty"`
+	Route                *routeExpect       `json:"route,omitempty"`
+	ClusterPods          []clusterPodExpect `json:"clusterPods,omitempty"`
+	PlantedRevisionUsed  *bool              `json:"plantedRevisionUsed,omitempty"`
+	CapturedRevisionGone *bool              `json:"capturedRevisionGone,omitempty"`
+	LatestRevisionExists *bool              `json:"latestRevisionExists,omitempty"`
 }
 
 type hashExpect struct {
@@ -190,6 +241,41 @@ type snapshotExpect struct {
 	ControllerOwner   *bool             `json:"controllerOwner,omitempty"`
 }
 
+type deletionExpect struct {
+	Stage          string              `json:"stage,omitempty"`
+	Outcome        string              `json:"outcome,omitempty"`
+	Message        *messageExpect      `json:"message,omitempty"`
+	PodsRemaining  *int                `json:"podsRemaining,omitempty"`
+	ForceDeleted   []string            `json:"forceDeleted,omitempty"`
+	Pods           []deletionPodExpect `json:"pods,omitempty"`
+	StartedAt      *bool               `json:"startedAt,omitempty"`
+	Deadline       *bool               `json:"deadline,omitempty"`
+	RouteRemovedAt *bool               `json:"routeRemovedAt,omitempty"`
+	UninstalledAt  *bool               `json:"uninstalledAt,omitempty"`
+	PodsGoneAt     *bool               `json:"podsGoneAt,omitempty"`
+}
+
+type deletionPodExpect struct {
+	Name  string `json:"name"`
+	Phase string `json:"phase,omitempty"`
+	Node  string `json:"node,omitempty"`
+	Grace *int64 `json:"grace,omitempty"`
+	Stuck *bool  `json:"stuck,omitempty"`
+}
+
+type routeExpect struct {
+	Name       string   `json:"name,omitempty"`
+	NotFound   *bool    `json:"notFound,omitempty"`
+	Deleting   *bool    `json:"deleting,omitempty"`
+	Finalizers []string `json:"finalizers,omitempty"`
+}
+
+type clusterPodExpect struct {
+	Name     string `json:"name"`
+	NotFound *bool  `json:"notFound,omitempty"`
+	Deleting *bool  `json:"deleting,omitempty"`
+}
+
 type requeueExpect struct {
 	Exact   *cases.Duration `json:"exact,omitempty"`
 	AtLeast *cases.Duration `json:"atLeast,omitempty"`
@@ -214,10 +300,11 @@ type caseRun struct {
 	appliedHash        string
 	observedGeneration int64
 	planted            string
+	nowOffset          time.Duration
 }
 
 func runServiceCase(tc serviceCase) {
-	rec := events.NewFakeRecorder(32)
+	rec := events.NewFakeRecorder(64)
 	h := &fakeHelm{}
 	l := &versionList{versions: []string{ver086}}
 	limit := tc.HistoryLimit
@@ -238,6 +325,7 @@ func runServiceCase(tc serviceCase) {
 		r:      r,
 		events: rec.Events,
 	}
+	r.Now = run.clock
 	Expect(tc.Steps).NotTo(BeEmpty(), tc.Name)
 	for i, step := range tc.Steps {
 		run.step(i, step)
@@ -292,6 +380,22 @@ func (c *caseRun) step(i int, step serviceStep) {
 		c.setStatus(step)
 	case "setStatusReleaseUID":
 		c.setStatusReleaseUID()
+	case "addPod":
+		c.addPod(step)
+	case "removePod":
+		c.removePod(step)
+	case "setNode":
+		c.setNode(step)
+	case "advanceClock":
+		c.advanceClock(step)
+	case "addRoute":
+		c.addRoute(step)
+	case "clearRouteFinalizer":
+		c.clearRouteFinalizer(step)
+	case "annotate":
+		c.annotate(step)
+	case "freshReconciler":
+		c.freshReconciler()
 	default:
 		Fail(fmt.Sprintf("%s: step %d unknown action %q", c.tc.Name, i+1, step.Action))
 	}
@@ -311,6 +415,7 @@ func (c *caseRun) create(step serviceStep) {
 	if step.Finalizers != nil {
 		obj.Finalizers = append([]string(nil), step.Finalizers...)
 	}
+	applyDeletionSpec(obj, step.Deletion)
 	Expect(k8sClient.Create(ctx, obj)).To(Succeed())
 }
 
@@ -331,7 +436,162 @@ func (c *caseRun) update(step serviceStep) {
 	if step.Layers != nil {
 		obj.Spec.Layers = layersFrom(step.Layers)
 	}
+	applyDeletionSpec(obj, step.Deletion)
 	Expect(k8sClient.Update(ctx, obj)).To(Succeed())
+}
+
+func (c *caseRun) annotate(step serviceStep) {
+	Expect(step.Annotations).NotTo(BeEmpty())
+	obj := fetch(c.ns, c.name)
+	if obj.Annotations == nil {
+		obj.Annotations = map[string]string{}
+	}
+	maps.Copy(obj.Annotations, step.Annotations)
+	Expect(k8sClient.Update(ctx, obj)).To(Succeed())
+}
+
+func applyDeletionSpec(obj *servingv1alpha1.LLMService, in *deletionSpecInput) {
+	if in == nil {
+		return
+	}
+	spec := &servingv1alpha1.DeletionSpec{}
+	if obj.Spec.Deletion != nil {
+		spec = obj.Spec.Deletion
+	}
+	if in.MaxWait != nil {
+		spec.MaxWait = &metav1.Duration{Duration: in.MaxWait.Std()}
+	}
+	if in.RouteSettle != nil {
+		spec.RouteSettle = &metav1.Duration{Duration: in.RouteSettle.Std()}
+	}
+	if in.ForceDeleteAfter != nil {
+		d := metav1.Duration{Duration: in.ForceDeleteAfter.Std()}
+		spec.ForceDeleteAfter = &d
+	}
+	obj.Spec.Deletion = spec
+}
+
+func (c *caseRun) clock() time.Time {
+	return time.Now().Add(c.nowOffset)
+}
+
+func (c *caseRun) advanceClock(step serviceStep) {
+	Expect(step.Advance).NotTo(BeNil())
+	c.nowOffset += step.Advance.Std()
+}
+
+func (c *caseRun) freshReconciler() {
+	rec := events.NewFakeRecorder(64)
+	next := newReconciler(c.h, c.l, c.r.HistoryLimit)
+	next.Recorder = rec
+	next.PendingTimeout = c.r.PendingTimeout
+	next.AllowedChartRepos = append([]string(nil), c.r.AllowedChartRepos...)
+	next.Now = c.clock
+	c.r = next
+	c.events = rec.Events
+}
+
+func (c *caseRun) nodeName(short string) string {
+	if short == "" {
+		return ""
+	}
+	return c.ns + "-" + short
+}
+
+func (c *caseRun) addPod(step serviceStep) {
+	Expect(step.Pod).NotTo(BeNil())
+	Expect(step.Pod.Name).NotTo(BeEmpty())
+	labels := step.Pod.Labels
+	if labels == nil {
+		labels = map[string]string{
+			"app.kubernetes.io/instance": c.name,
+			"app":                        c.name + "-sglang",
+		}
+	}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: step.Pod.Name, Namespace: c.ns, Labels: labels},
+		Spec: corev1.PodSpec{
+			RestartPolicy: corev1.RestartPolicyAlways,
+			NodeName:      c.nodeName(step.Pod.Node),
+			Containers:    []corev1.Container{{Name: "c", Image: "pause"}},
+		},
+	}
+	if step.Pod.Grace != nil {
+		pod.Spec.TerminationGracePeriodSeconds = step.Pod.Grace
+	}
+	Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+	if step.Pod.Phase != "" {
+		pod.Status.Phase = corev1.PodPhase(step.Pod.Phase)
+		Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+	}
+	if step.Pod.DeletionTimestamp != nil {
+		Expect(k8sClient.Delete(ctx, pod)).To(Succeed())
+	}
+}
+
+func (c *caseRun) removePod(step serviceStep) {
+	Expect(step.Pod).NotTo(BeNil())
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: step.Pod.Name, Namespace: c.ns}}
+	Expect(k8sClient.Delete(ctx, pod, client.GracePeriodSeconds(0))).To(Succeed())
+}
+
+func (c *caseRun) setNode(step serviceStep) {
+	Expect(step.Node).NotTo(BeNil())
+	Expect(step.Node.Name).NotTo(BeEmpty())
+	name := c.nodeName(step.Node.Name)
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, node)
+	if apierrors.IsNotFound(err) {
+		Expect(k8sClient.Create(ctx, node)).To(Succeed())
+	} else {
+		Expect(err).NotTo(HaveOccurred())
+	}
+	status := corev1.ConditionFalse
+	if step.Node.Ready {
+		status = corev1.ConditionTrue
+	}
+	node.Status.Conditions = []corev1.NodeCondition{{
+		Type:   corev1.NodeReady,
+		Status: status,
+	}}
+	Expect(k8sClient.Status().Update(ctx, node)).To(Succeed())
+}
+
+func (c *caseRun) addRoute(step serviceStep) {
+	name := c.routeName(step)
+	u := modelRouteObject(c.ns, name)
+	if step.Route != nil {
+		u.SetFinalizers(append([]string(nil), step.Route.Finalizers...))
+	}
+	u.Object["spec"] = map[string]any{"model": name}
+	Expect(k8sClient.Create(ctx, u)).To(Succeed())
+}
+
+func (c *caseRun) clearRouteFinalizer(step serviceStep) {
+	name := c.routeName(step)
+	u := modelRouteObject(c.ns, name)
+	Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: c.ns, Name: name}, u)).To(Succeed())
+	u.SetFinalizers(nil)
+	err := k8sClient.Update(ctx, u)
+	if err != nil && !apierrors.IsNotFound(err) {
+		Expect(err).NotTo(HaveOccurred())
+	}
+}
+
+func (c *caseRun) routeName(step serviceStep) string {
+	if step.Route != nil && step.Route.Name != "" {
+		return step.Route.Name
+	}
+	return c.name
+}
+
+func modelRouteObject(ns, name string) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{}
+	u.SetAPIVersion("routing.modelsphere.dev/v1alpha1")
+	u.SetKind("ModelRoute")
+	u.SetNamespace(ns)
+	u.SetName(name)
+	return u
 }
 
 func layersFrom(in []layerSpec) []servingv1alpha1.Layer {
@@ -418,7 +678,9 @@ func (c *caseRun) releaseFrom(in releaseSpec) helm.Release {
 		if in.Updated != nil {
 			updated = time.Now().Add(in.Updated.Std())
 		}
-		return *ownedRel(fetch(c.ns, c.name), in.Revision, in.Status, updated)
+		rel := *ownedRel(fetch(c.ns, c.name), in.Revision, in.Status, updated)
+		rel.Manifest = in.Manifest
+		return rel
 	}
 	rel := helm.Release{
 		Revision:     in.Revision,
@@ -427,6 +689,7 @@ func (c *caseRun) releaseFrom(in releaseSpec) helm.Release {
 		ChartVersion: in.ChartVersion,
 		Config:       in.Config,
 		Labels:       in.Labels,
+		Manifest:     in.Manifest,
 	}
 	if in.Updated != nil {
 		rel.Updated = time.Now().Add(in.Updated.Std())
@@ -471,10 +734,40 @@ func (c *caseRun) setStatus(step serviceStep) {
 	if step.Status.Phase != "" {
 		obj.Status.Phase = servingv1alpha1.Phase(step.Status.Phase)
 	}
+	if step.Status.ChartName != "" {
+		obj.Status.Chart.Name = step.Status.ChartName
+	}
+	if step.Status.Deletion != nil {
+		obj.Status.Deletion = deletionStatusFrom(step.Status.Deletion)
+	}
 	for _, cond := range step.Status.Conditions {
 		meta.SetStatusCondition(&obj.Status.Conditions, conditionFrom(obj, cond))
 	}
 	Expect(k8sClient.Status().Update(ctx, obj)).To(Succeed())
+}
+
+func deletionStatusFrom(in *deletionStatusInput) *servingv1alpha1.DeletionStatus {
+	out := &servingv1alpha1.DeletionStatus{
+		Stage:   servingv1alpha1.DeletionStage(in.Stage),
+		Outcome: servingv1alpha1.DeletionOutcome(in.Outcome),
+		Message: in.Message,
+	}
+	out.StartedAt = offsetTime(in.StartedAt)
+	out.RouteRemovedAt = offsetTime(in.RouteRemovedAt)
+	out.UninstalledAt = offsetTime(in.UninstalledAt)
+	out.PodsGoneAt = offsetTime(in.PodsGoneAt)
+	if in.PodsRemaining != nil {
+		out.PodsRemaining = *in.PodsRemaining
+	}
+	return out
+}
+
+func offsetTime(d *cases.Duration) *metav1.Time {
+	if d == nil {
+		return nil
+	}
+	t := metav1.NewTime(time.Now().Add(d.Std()))
+	return &t
 }
 
 func conditionFrom(obj *servingv1alpha1.LLMService, cond conditionSpec) metav1.Condition {
@@ -549,6 +842,13 @@ func (c *caseRun) check(exp *expectSpec, result reconcile.Result, err error, bef
 	if exp.EventContains != "" {
 		Expect(c.events).To(Receive(ContainSubstring(exp.EventContains)))
 	}
+	if len(exp.EventsContain) > 0 {
+		c.checkEvents(exp.EventsContain)
+	}
+	if exp.Route != nil {
+		c.checkRoute(exp.Route)
+	}
+	c.checkClusterPods(exp.ClusterPods)
 	if exp.NotFound != nil && *exp.NotFound {
 		c.checkMissing()
 	}
@@ -642,7 +942,7 @@ func (e *expectSpec) wantsObject() bool {
 	if e.HelmRevision != nil || e.ObservedGeneration != "" || e.Generation != nil || e.History != nil {
 		return true
 	}
-	if len(e.Conditions) > 0 || e.ReleaseUID != "" || e.Message != nil || e.Finalizer != "" {
+	if len(e.Conditions) > 0 || e.ReleaseUID != "" || e.Message != nil || e.Finalizer != "" || e.Deletion != nil {
 		return true
 	}
 	if e.DistinctRevisions != nil || len(e.Snapshots) > 0 || e.PlantedRevisionUsed != nil {
@@ -670,6 +970,7 @@ func (c *caseRun) checkObject(exp *expectSpec, got *servingv1alpha1.LLMService) 
 	c.checkConditions(exp.Conditions, got)
 	c.checkReleaseUID(exp.ReleaseUID, got)
 	c.checkMessage(exp.Message, got)
+	c.checkDeletion(exp.Deletion, got)
 	c.checkFinalizer(exp.Finalizer, got)
 	c.checkRevisions(exp, got)
 }
@@ -787,24 +1088,147 @@ func (c *caseRun) checkReleaseUID(want string, got *servingv1alpha1.LLMService) 
 }
 
 func (c *caseRun) checkMessage(exp *messageExpect, got *servingv1alpha1.LLMService) {
+	checkText(exp, got.Status.Message)
+}
+
+func checkText(exp *messageExpect, got string) {
 	if exp == nil {
 		return
 	}
 	if exp.Equals != "" {
-		Expect(got.Status.Message).To(Equal(exp.Equals))
+		Expect(got).To(Equal(exp.Equals))
 	}
 	// An empty substring matches every message, so it is rejected on its own.
 	for _, sub := range exp.Contains {
 		if sub == "" {
 			Fail("message.contains entry is empty")
 		}
-		Expect(got.Status.Message).To(ContainSubstring(sub))
+		Expect(got).To(ContainSubstring(sub))
 	}
 	for _, sub := range exp.NotContains {
 		if sub == "" {
 			Fail("message.notContains entry is empty")
 		}
-		Expect(got.Status.Message).NotTo(ContainSubstring(sub))
+		Expect(got).NotTo(ContainSubstring(sub))
+	}
+}
+
+func (c *caseRun) checkDeletion(exp *deletionExpect, got *servingv1alpha1.LLMService) {
+	if exp == nil {
+		return
+	}
+	Expect(got.Status.Deletion).NotTo(BeNil())
+	del := got.Status.Deletion
+	if exp.Stage != "" {
+		Expect(string(del.Stage)).To(Equal(exp.Stage))
+	}
+	if exp.Outcome != "" {
+		Expect(string(del.Outcome)).To(Equal(exp.Outcome))
+	}
+	checkText(exp.Message, del.Message)
+	if exp.PodsRemaining != nil {
+		Expect(int(del.PodsRemaining)).To(Equal(*exp.PodsRemaining))
+	}
+	if exp.ForceDeleted != nil {
+		Expect(del.ForceDeleted).To(Equal(exp.ForceDeleted))
+	}
+	expectTimeSet(exp.StartedAt, del.StartedAt, "startedAt")
+	expectTimeSet(exp.Deadline, del.Deadline, "deadline")
+	expectTimeSet(exp.RouteRemovedAt, del.RouteRemovedAt, "routeRemovedAt")
+	expectTimeSet(exp.UninstalledAt, del.UninstalledAt, "uninstalledAt")
+	expectTimeSet(exp.PodsGoneAt, del.PodsGoneAt, "podsGoneAt")
+	if exp.Pods == nil {
+		return
+	}
+	Expect(del.Pods).To(HaveLen(len(exp.Pods)))
+	for i, want := range exp.Pods {
+		gotPod := del.Pods[i]
+		Expect(gotPod.Name).To(Equal(want.Name))
+		if want.Phase != "" {
+			Expect(gotPod.Phase).To(Equal(want.Phase))
+		}
+		if want.Node != "" {
+			Expect(gotPod.Node).To(Equal(c.nodeName(want.Node)))
+		}
+		if want.Grace != nil {
+			Expect(gotPod.Grace).To(Equal(*want.Grace))
+		}
+		if want.Stuck != nil {
+			Expect(gotPod.Stuck).To(Equal(*want.Stuck))
+		}
+	}
+}
+
+func expectTimeSet(want *bool, got *metav1.Time, field string) {
+	if want == nil {
+		return
+	}
+	if *want {
+		Expect(got).NotTo(BeNil(), field)
+		return
+	}
+	Expect(got).To(BeNil(), field)
+}
+
+func (c *caseRun) checkEvents(want []string) {
+	got := c.drainEvents()
+	for _, sub := range want {
+		Expect(got).To(ContainElement(ContainSubstring(sub)), "events %v", got)
+	}
+}
+
+func (c *caseRun) drainEvents() []string {
+	var out []string
+	for {
+		select {
+		case e := <-c.events:
+			out = append(out, e)
+		default:
+			return out
+		}
+	}
+}
+
+func (c *caseRun) checkRoute(exp *routeExpect) {
+	name := c.name
+	if exp.Name != "" {
+		name = exp.Name
+	}
+	u := modelRouteObject(c.ns, name)
+	err := k8sClient.Get(ctx, types.NamespacedName{Namespace: c.ns, Name: name}, u)
+	if exp.NotFound != nil && *exp.NotFound {
+		Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		return
+	}
+	Expect(err).NotTo(HaveOccurred())
+	if exp.Deleting != nil {
+		if *exp.Deleting {
+			Expect(u.GetDeletionTimestamp().IsZero()).To(BeFalse())
+		} else {
+			Expect(u.GetDeletionTimestamp().IsZero()).To(BeTrue())
+		}
+	}
+	if exp.Finalizers != nil {
+		Expect(u.GetFinalizers()).To(Equal(exp.Finalizers))
+	}
+}
+
+func (c *caseRun) checkClusterPods(pods []clusterPodExpect) {
+	for _, want := range pods {
+		pod := &corev1.Pod{}
+		err := k8sClient.Get(ctx, types.NamespacedName{Namespace: c.ns, Name: want.Name}, pod)
+		if want.NotFound != nil && *want.NotFound {
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), want.Name)
+			continue
+		}
+		Expect(err).NotTo(HaveOccurred())
+		if want.Deleting != nil {
+			if *want.Deleting {
+				Expect(pod.DeletionTimestamp.IsZero()).To(BeFalse())
+			} else {
+				Expect(pod.DeletionTimestamp.IsZero()).To(BeTrue())
+			}
+		}
 	}
 }
 

@@ -1,0 +1,15 @@
+name: keeps-a-gpucluster-namespace
+description: a gpucluster ModelRoute keeps the namespace from the manifest
+inputs:
+  namespace: ns
+  manifest: |
+    apiVersion: routing.gpucluster.io/v1alpha1
+    kind: ModelRoute
+    metadata:
+      name: legacy
+      namespace: other
+expected:
+  routes:
+    - apiVersion: routing.gpucluster.io/v1alpha1
+      namespace: other
+      name: legacy

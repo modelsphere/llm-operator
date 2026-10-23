@@ -1,0 +1,10 @@
+name: rejects-a-route-without-a-name
+description: a ModelRoute without a name is an error
+inputs:
+  namespace: ns
+  manifest: |
+    apiVersion: routing.modelsphere.dev/v1alpha1
+    kind: ModelRoute
+    metadata: {}
+expected:
+  error: true

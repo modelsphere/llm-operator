@@ -1,0 +1,49 @@
+name: waits-for-pods-then-drops-the-finalizer
+description: waits for pods, then drops the finalizer
+steps:
+  - action: create
+    version: "0.8.6"
+    finalizers:
+      - serving.modelsphere.dev/finalizer
+  - action: putRelease
+    release:
+      owned: true
+      revision: 1
+      status: deployed
+  - action: setStatus
+    status:
+      chartName: sglang
+  - action: addPod
+    pod:
+      name: app-only
+      phase: Running
+      labels:
+        app: qwen-sglang
+  - action: addPod
+    pod:
+      name: instance-only
+      phase: Running
+      labels:
+        app.kubernetes.io/instance: qwen
+  - action: delete
+  - action: reconcile
+    expect:
+      uninstalls: 1
+      phase: Deleting
+      finalizer: present
+      requeue:
+        exact: 5s
+      deletion:
+        stage: PodsTerminating
+        outcome: NoRoute
+        podsRemaining: 2
+  - action: removePod
+    pod:
+      name: app-only
+  - action: removePod
+    pod:
+      name: instance-only
+  - action: reconcile
+    expect:
+      uninstalls: 1
+      notFound: true

@@ -1,0 +1,37 @@
+name: route-stuck-past-maxwait-leaves-the-finalizer
+description: a route stuck past maxWait gives RouteStuck, uninstalls, and leaves the ModelRoute finalizer
+steps:
+  - action: create
+    version: "0.8.6"
+    finalizers:
+      - serving.modelsphere.dev/finalizer
+    annotations:
+      serving.modelsphere.dev/deletion-max-wait: 0s
+  - action: putRelease
+    release:
+      owned: true
+      revision: 1
+      status: deployed
+      manifest: |
+        apiVersion: routing.modelsphere.dev/v1alpha1
+        kind: ModelRoute
+        metadata:
+          name: qwen
+  - action: addRoute
+    route:
+      name: qwen
+      finalizers:
+        - routing.modelsphere.dev/cleanup
+  - action: delete
+  - action: reconcile
+    expect:
+      uninstalls: 1
+      notFound: true
+      eventsContain:
+        - RouteStuck
+        - Uninstalled
+      route:
+        notFound: false
+        deleting: true
+        finalizers:
+          - routing.modelsphere.dev/cleanup

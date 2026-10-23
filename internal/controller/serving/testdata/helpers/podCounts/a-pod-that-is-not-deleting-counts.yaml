@@ -1,0 +1,20 @@
+name: a-pod-that-is-not-deleting-counts
+description: a pod with no deletionTimestamp counts and uses the default grace
+inputs:
+  now: "2026-01-02T03:04:05Z"
+  nodesOK: true
+  nodes:
+    - name: gpu-7
+      ready: false
+  pods:
+    - name: engine
+      phase: Running
+      node: gpu-7
+expected:
+  remaining: 1
+  pods:
+    - name: engine
+      stuck: false
+      phase: Running
+      node: gpu-7
+      grace: 30

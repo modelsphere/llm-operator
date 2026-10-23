@@ -1,0 +1,6 @@
+name: pods-gone-releases
+description: no remaining pods releases
+inputs:
+  stage: PodsTerminating
+expected:
+  stage: Released

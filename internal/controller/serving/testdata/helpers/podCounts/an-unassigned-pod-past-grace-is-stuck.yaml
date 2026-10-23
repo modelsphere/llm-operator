@@ -1,0 +1,17 @@
+name: an-unassigned-pod-past-grace-is-stuck
+description: past grace a pod with no node is stuck
+inputs:
+  now: "2026-01-02T03:04:05Z"
+  nodesOK: true
+  pods:
+    - name: engine
+      phase: Pending
+      grace: 30
+      deletionTimestamp: "2026-01-02T03:03:00Z"
+expected:
+  remaining: 0
+  pods:
+    - name: engine
+      stuck: true
+      phase: Pending
+      grace: 30

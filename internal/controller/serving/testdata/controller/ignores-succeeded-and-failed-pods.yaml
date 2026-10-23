@@ -1,0 +1,25 @@
+name: ignores-succeeded-and-failed-pods
+description: ignores Succeeded and Failed pods
+steps:
+  - action: create
+    version: "0.8.6"
+    finalizers:
+      - serving.modelsphere.dev/finalizer
+  - action: putRelease
+    release:
+      owned: true
+      revision: 1
+      status: deployed
+  - action: addPod
+    pod:
+      name: done
+      phase: Succeeded
+  - action: addPod
+    pod:
+      name: bad
+      phase: Failed
+  - action: delete
+  - action: reconcile
+    expect:
+      uninstalls: 1
+      notFound: true

@@ -1,0 +1,29 @@
+name: maxwait-timeout-releases-with-timedout-while-pods-remain
+description: maxWait timeout releases with TimedOut while pods remain
+steps:
+  - action: create
+    version: "0.8.6"
+    finalizers:
+      - serving.modelsphere.dev/finalizer
+    annotations:
+      serving.modelsphere.dev/deletion-max-wait: 0s
+  - action: putRelease
+    release:
+      owned: true
+      revision: 1
+      status: deployed
+  - action: addPod
+    pod:
+      name: engine
+      phase: Running
+  - action: delete
+  - action: reconcile
+    expect:
+      uninstalls: 1
+      notFound: true
+      eventsContain:
+        - TimedOut
+      clusterPods:
+        - name: engine
+          notFound: false
+          deleting: false

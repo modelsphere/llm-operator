@@ -1,0 +1,9 @@
+name: spec-force-delete-zero
+description: a spec forceDeleteAfter of 0s force-deletes immediately
+inputs:
+  forceSet: true
+  forceDeleteAfter: 0s
+expected:
+  maxWait: 1h
+  routeSettle: 60s
+  forceDeleteAfter: 0s

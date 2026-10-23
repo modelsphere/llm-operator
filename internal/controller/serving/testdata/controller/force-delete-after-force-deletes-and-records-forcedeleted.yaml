@@ -1,0 +1,60 @@
+name: force-delete-after-force-deletes-and-records-forcedeleted
+description: force-delete-after force-deletes and records forceDeleted
+steps:
+  - action: setNode
+    node:
+      name: gpu-7
+      ready: true
+  - action: create
+    version: "0.8.6"
+    finalizers:
+      - serving.modelsphere.dev/finalizer
+    annotations:
+      serving.modelsphere.dev/force-delete-after: 1h
+  - action: putRelease
+    release:
+      owned: true
+      revision: 1
+      status: deployed
+  - action: addPod
+    pod:
+      name: live
+      phase: Running
+  - action: addPod
+    pod:
+      name: stuck
+      phase: Running
+      node: gpu-7
+      grace: 600
+      deletionTimestamp: 0s
+  - action: delete
+  - action: reconcile
+    expect:
+      uninstalls: 1
+      finalizer: present
+      deletion:
+        stage: PodsTerminating
+        outcome: NoRoute
+        podsRemaining: 2
+      requeue:
+        exact: 5s
+  - action: annotate
+    annotations:
+      serving.modelsphere.dev/force-delete-after: 0s
+  - action: reconcile
+    expect:
+      uninstalls: 1
+      finalizer: present
+      deletion:
+        stage: ForceDeleting
+        outcome: PodsForceDeleted
+        podsRemaining: 1
+        forceDeleted:
+          - stuck
+      clusterPods:
+        - name: stuck
+          notFound: true
+        - name: live
+          notFound: false
+      eventsContain:
+        - PodForceDeleted

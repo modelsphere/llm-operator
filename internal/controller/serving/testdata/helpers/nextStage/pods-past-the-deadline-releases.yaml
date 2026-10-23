@@ -1,0 +1,9 @@
+name: pods-past-the-deadline-releases
+description: pods still present past the deadline releases
+inputs:
+  stage: PodsTerminating
+  podsRemaining: 2
+  pastDeadline: true
+  forceDue: true
+expected:
+  stage: Released

@@ -1,0 +1,7 @@
+name: uninstalling-waits-for-helm
+description: Uninstalling stays until helm uninstall has been recorded
+inputs:
+  stage: Uninstalling
+  hasRoute: true
+expected:
+  stage: Uninstalling

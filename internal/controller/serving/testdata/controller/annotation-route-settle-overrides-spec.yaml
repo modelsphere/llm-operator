@@ -1,0 +1,35 @@
+name: annotation-route-settle-overrides-spec
+description: an annotation overrides spec.deletion.routeSettle
+steps:
+  - action: create
+    version: "0.8.6"
+    finalizers:
+      - serving.modelsphere.dev/finalizer
+    annotations:
+      serving.modelsphere.dev/route-settle: 5s
+    deletion:
+      routeSettle: 30s
+      maxWait: 2h
+  - action: putRelease
+    release:
+      owned: true
+      revision: 1
+      status: deployed
+      manifest: |
+        apiVersion: routing.modelsphere.dev/v1alpha1
+        kind: ModelRoute
+        metadata:
+          name: qwen
+  - action: addRoute
+    route:
+      name: qwen
+  - action: delete
+  - action: reconcile
+    expect:
+      uninstalls: 0
+      deletion:
+        stage: RouteSettling
+      requeue:
+        exact: 5s
+      route:
+        notFound: true

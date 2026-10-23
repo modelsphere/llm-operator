@@ -1,0 +1,15 @@
+name: annotation-overrides-spec
+description: annotations override spec
+inputs:
+  annotations:
+    serving.modelsphere.dev/deletion-max-wait: 5m
+    serving.modelsphere.dev/route-settle: 5s
+    serving.modelsphere.dev/force-delete-after: 1s
+  maxWait: 2h
+  routeSettle: 30s
+  forceSet: true
+  forceDeleteAfter: 10s
+expected:
+  maxWait: 5m
+  routeSettle: 5s
+  forceDeleteAfter: 1s

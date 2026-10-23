@@ -1,0 +1,15 @@
+name: negative-annotation-falls-back
+description: a negative annotation falls back to the default
+inputs:
+  annotations:
+    serving.modelsphere.dev/route-settle: -1s
+    serving.modelsphere.dev/force-delete-after: -5s
+expected:
+  maxWait: 1h
+  routeSettle: 60s
+  forceOff: true
+  invalid:
+    - key: serving.modelsphere.dev/route-settle
+      contains: negative
+    - key: serving.modelsphere.dev/force-delete-after
+      contains: negative

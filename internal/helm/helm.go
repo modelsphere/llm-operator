@@ -53,6 +53,9 @@ type Release struct {
 	Labels map[string]string
 	// Updated is the release info last-deployed time.
 	Updated time.Time
+	// Manifest is the rendered manifest of the release. Deletion reads
+	// ModelRoute objects from it.
+	Manifest string
 }
 
 // ChartRef selects one exact chart version in a repository.
@@ -275,6 +278,7 @@ func toRelease(rel release.Releaser) (*Release, error) {
 		Revision: v1rel.Version,
 		Config:   v1rel.Config,
 		Labels:   maps.Clone(v1rel.Labels),
+		Manifest: v1rel.Manifest,
 	}
 	if v1rel.Info != nil {
 		out.Status = string(v1rel.Info.Status)

@@ -1,0 +1,7 @@
+name: route-removing-waits
+description: RouteRemoving waits while the route is still present
+inputs:
+  stage: RouteRemoving
+  hasRoute: true
+expected:
+  stage: RouteRemoving

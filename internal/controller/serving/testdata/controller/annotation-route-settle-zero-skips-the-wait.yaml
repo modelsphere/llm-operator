@@ -1,0 +1,31 @@
+name: annotation-route-settle-zero-skips-the-wait
+description: an annotation of 0s skips the route settle wait
+steps:
+  - action: create
+    version: "0.8.6"
+    finalizers:
+      - serving.modelsphere.dev/finalizer
+    annotations:
+      serving.modelsphere.dev/route-settle: 0s
+    deletion:
+      routeSettle: 30s
+  - action: putRelease
+    release:
+      owned: true
+      revision: 1
+      status: deployed
+      manifest: |
+        apiVersion: routing.modelsphere.dev/v1alpha1
+        kind: ModelRoute
+        metadata:
+          name: qwen
+  - action: addRoute
+    route:
+      name: qwen
+  - action: delete
+  - action: reconcile
+    expect:
+      uninstalls: 1
+      notFound: true
+      eventsContain:
+        - Uninstalled

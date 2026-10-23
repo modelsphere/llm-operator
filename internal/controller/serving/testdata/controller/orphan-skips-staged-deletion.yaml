@@ -1,0 +1,26 @@
+name: orphan-skips-staged-deletion
+description: Orphan skips all stages
+steps:
+  - action: create
+    version: "0.8.6"
+  - action: reconcile
+    expect: {}
+  - action: addRoute
+    route:
+      name: qwen
+      finalizers:
+        - routing.modelsphere.dev/cleanup
+  - action: update
+    annotations:
+      serving.modelsphere.dev/deletion-policy: Orphan
+  - action: delete
+  - action: reconcile
+    expect:
+      uninstalls: 0
+      getsUnchanged: true
+      notFound: true
+      route:
+        notFound: false
+        deleting: false
+        finalizers:
+          - routing.modelsphere.dev/cleanup

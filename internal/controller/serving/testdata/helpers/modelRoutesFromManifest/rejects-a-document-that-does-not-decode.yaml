@@ -1,0 +1,9 @@
+name: rejects-a-document-that-does-not-decode
+description: a document that does not decode is an error
+inputs:
+  namespace: ns
+  manifest: |
+    apiVersion: v1
+    kind: [broken
+expected:
+  error: true

@@ -1,0 +1,6 @@
+name: empty-with-a-route
+description: a manifest with a ModelRoute starts at RouteRemoving
+inputs:
+  hasRoute: true
+expected:
+  stage: RouteRemoving

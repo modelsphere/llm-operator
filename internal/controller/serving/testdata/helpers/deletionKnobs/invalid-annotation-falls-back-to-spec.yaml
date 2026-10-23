@@ -1,0 +1,17 @@
+name: invalid-annotation-falls-back-to-spec
+description: an unparseable annotation falls back to spec
+inputs:
+  annotations:
+    serving.modelsphere.dev/deletion-max-wait: nope
+    serving.modelsphere.dev/route-settle: 1d
+  maxWait: 2h
+  routeSettle: 15s
+expected:
+  maxWait: 2h
+  routeSettle: 15s
+  forceOff: true
+  invalid:
+    - key: serving.modelsphere.dev/deletion-max-wait
+      contains: invalid duration
+    - key: serving.modelsphere.dev/route-settle
+      contains: unknown unit

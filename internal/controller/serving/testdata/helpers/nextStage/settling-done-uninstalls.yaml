@@ -1,0 +1,7 @@
+name: settling-done-uninstalls
+description: RouteSettling moves to Uninstalling when the wait is over
+inputs:
+  stage: RouteSettling
+  settleDone: true
+expected:
+  stage: Uninstalling

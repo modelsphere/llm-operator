@@ -1,0 +1,22 @@
+name: a-missing-node-past-grace-is-stuck
+description: past grace a pod whose node is missing is stuck
+inputs:
+  now: "2026-01-02T03:04:05Z"
+  nodesOK: true
+  nodes:
+    - name: other
+      ready: true
+  pods:
+    - name: engine
+      phase: Running
+      node: gpu-7
+      grace: 30
+      deletionTimestamp: "2026-01-02T03:03:00Z"
+expected:
+  remaining: 0
+  pods:
+    - name: engine
+      stuck: true
+      phase: Running
+      node: gpu-7
+      grace: 30

@@ -1,0 +1,7 @@
+name: empty
+description: an empty manifest has no ModelRoute
+inputs:
+  namespace: ns
+  manifest: ""
+expected:
+  routes: []

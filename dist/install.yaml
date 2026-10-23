@@ -516,6 +516,48 @@ spec:
                 - repo
                 - version
                 type: object
+              deletion:
+                description: |-
+                  deletion tunes staged teardown. Annotations on the object override these
+                  fields, and an unset field uses the built-in default. An explicit 0s is
+                  a real zero (routeSettle 0s skips the settle wait).
+                properties:
+                  forceDeleteAfter:
+                    description: |-
+                      forceDeleteAfter force-deletes pods that have been terminating for this
+                      long, with gracePeriodSeconds 0. The wait starts when deletion was
+                      requested. Unset leaves the pods to the kubelet. The annotation
+                      serving.modelsphere.dev/force-delete-after overrides this.
+                    format: duration
+                    type: string
+                    x-kubernetes-validations:
+                    - message: forceDeleteAfter must be a non-negative duration
+                      rule: duration(self) >= duration('0s')
+                  maxWait:
+                    default: 1h
+                    description: |-
+                      maxWait is the budget for holding the finalizer, measured from
+                      status.deletion.startedAt. Past it, remaining waits are skipped and the
+                      finalizer is dropped. The annotation
+                      serving.modelsphere.dev/deletion-max-wait overrides this on every pass.
+                    format: duration
+                    type: string
+                    x-kubernetes-validations:
+                    - message: maxWait must be a non-negative duration
+                      rule: duration(self) >= duration('0s')
+                  routeSettle:
+                    default: 60s
+                    description: |-
+                      routeSettle is how long to wait after the ModelRoute is gone so the
+                      gateway can drop it before the Services disappear. 0, via the
+                      annotation serving.modelsphere.dev/route-settle, skips the wait. The
+                      built-in default is 60s.
+                    format: duration
+                    type: string
+                    x-kubernetes-validations:
+                    - message: routeSettle must be a non-negative duration
+                      rule: duration(self) >= duration('0s')
+                type: object
               layers:
                 description: |-
                   layers are helm values documents merged in order, last writer wins.
@@ -568,8 +610,10 @@ spec:
                     type: string
                 type: object
               suspend:
-                description: suspend stops reconciliation. The status keeps the last
-                  outcome.
+                description: |-
+                  suspend stops reconciliation. The status keeps the last outcome.
+                  Suspend wins over deletion: a suspended object that is deleting is left
+                  as it is, including its finalizer.
                 type: boolean
             required:
             - chart
@@ -661,6 +705,109 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              deletion:
+                description: deletion is the staged teardown observed while the object
+                  is deleting.
+                properties:
+                  deadline:
+                    description: |-
+                      deadline is startedAt plus the effective maxWait. It is recomputed when
+                      the annotation or the spec changes.
+                    format: date-time
+                    type: string
+                  forceDeleted:
+                    description: forceDeleted are pod names deleted with gracePeriodSeconds
+                      0. Capped at 20.
+                    items:
+                      type: string
+                    maxItems: 20
+                    type: array
+                  message:
+                    description: |-
+                      message is a human-readable line, for example
+                      "waiting for 3 pods (2 stuck on NotReady node gpu-7)".
+                    type: string
+                  outcome:
+                    description: outcome is how teardown finished, or the non-clean
+                      result already known.
+                    enum:
+                    - Clean
+                    - NoRoute
+                    - RouteStuck
+                    - PodsForceDeleted
+                    - TimedOut
+                    type: string
+                  pods:
+                    description: |-
+                      pods are the release pods still in the API, ignoring Succeeded and Failed.
+                      The list is capped at 20.
+                    items:
+                      description: DeletionPod is one release pod observed during
+                        teardown.
+                      properties:
+                        deletionTimestamp:
+                          description: deletionTimestamp is the pod's metadata.deletionTimestamp.
+                          format: date-time
+                          type: string
+                        grace:
+                          description: grace is the pod's terminationGracePeriodSeconds.
+                            30 when the pod does not set one.
+                          format: int64
+                          type: integer
+                        name:
+                          description: name of the pod.
+                          type: string
+                        node:
+                          description: node is the node the pod is assigned to.
+                          type: string
+                        phase:
+                          description: phase is the pod phase.
+                          type: string
+                        stuck:
+                          description: |-
+                            stuck is true when the pod is past its grace on a NotReady or missing
+                            node, or past grace plus 5m, and no longer blocks the finalizer.
+                          type: boolean
+                      required:
+                      - name
+                      type: object
+                    maxItems: 20
+                    type: array
+                  podsGoneAt:
+                    description: podsGoneAt is when no release pods were left to wait
+                      for.
+                    format: date-time
+                    type: string
+                  podsRemaining:
+                    description: podsRemaining is how many release pods still block
+                      the finalizer.
+                    format: int32
+                    type: integer
+                  routeRemovedAt:
+                    description: routeRemovedAt is when the ModelRoute was first observed
+                      NotFound.
+                    format: date-time
+                    type: string
+                  stage:
+                    description: stage is the current teardown stage. It only moves
+                      forward.
+                    enum:
+                    - RouteRemoving
+                    - RouteSettling
+                    - Uninstalling
+                    - PodsTerminating
+                    - ForceDeleting
+                    - Released
+                    type: string
+                  startedAt:
+                    description: startedAt is when staged deletion began.
+                    format: date-time
+                    type: string
+                  uninstalledAt:
+                    description: uninstalledAt is when the helm uninstall succeeded.
+                    format: date-time
+                    type: string
+                type: object
               helm:
                 description: helm is the release revision and status last observed.
                 properties:
@@ -737,12 +884,13 @@ spec:
               phase:
                 description: |-
                   phase is the current reconciliation phase: Pending, Applying, Applied,
-                  or Failed.
+                  Failed, or Deleting.
                 enum:
                 - Pending
                 - Applying
                 - Applied
                 - Failed
+                - Deleting
                 type: string
               releaseUID:
                 description: |-
@@ -913,8 +1061,17 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - pods
   verbs:
+  - delete
   - get
   - list
   - patch

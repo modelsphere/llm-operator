@@ -1,0 +1,7 @@
+name: pods-wait
+description: pods still present stay in PodsTerminating
+inputs:
+  stage: PodsTerminating
+  podsRemaining: 1
+expected:
+  stage: PodsTerminating

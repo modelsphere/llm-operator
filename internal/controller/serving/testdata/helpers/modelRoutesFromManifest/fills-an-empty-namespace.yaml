@@ -1,0 +1,14 @@
+name: fills-an-empty-namespace
+description: a modelsphere ModelRoute with no namespace uses the service namespace
+inputs:
+  namespace: ns
+  manifest: |
+    apiVersion: routing.modelsphere.dev/v1alpha1
+    kind: ModelRoute
+    metadata:
+      name: qwen
+expected:
+  routes:
+    - apiVersion: routing.modelsphere.dev/v1alpha1
+      namespace: ns
+      name: qwen

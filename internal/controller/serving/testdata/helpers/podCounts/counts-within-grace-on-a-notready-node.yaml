@@ -1,0 +1,22 @@
+name: counts-within-grace-on-a-notready-node
+description: within grace a pod counts even on a NotReady node
+inputs:
+  now: "2026-01-02T03:04:05Z"
+  nodesOK: true
+  nodes:
+    - name: gpu-7
+      ready: false
+  pods:
+    - name: engine
+      phase: Running
+      node: gpu-7
+      grace: 30
+      deletionTimestamp: "2026-01-02T03:03:50Z"
+expected:
+  remaining: 1
+  pods:
+    - name: engine
+      stuck: false
+      phase: Running
+      node: gpu-7
+      grace: 30

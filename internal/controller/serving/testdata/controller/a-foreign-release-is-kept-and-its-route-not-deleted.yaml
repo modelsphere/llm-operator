@@ -1,0 +1,40 @@
+name: a-foreign-release-is-kept-and-its-route-not-deleted
+description: a foreign release is kept and its route not deleted
+steps:
+  - action: putRelease
+    release:
+      revision: 3
+      status: deployed
+      chartName: sglang
+      chartVersion: "0.8.6"
+      manifest: |
+        apiVersion: routing.modelsphere.dev/v1alpha1
+        kind: ModelRoute
+        metadata:
+          name: qwen
+  - action: create
+    version: "0.8.6"
+  - action: reconcile
+    expect:
+      conditions:
+        - type: Adopted
+          reason: Drift
+  - action: addRoute
+    route:
+      name: qwen
+      finalizers:
+        - routing.modelsphere.dev/cleanup
+  - action: delete
+  - action: reconcile
+    expect:
+      uninstalls: 0
+      notFound: true
+      release:
+        exists: true
+      route:
+        notFound: false
+        deleting: false
+        finalizers:
+          - routing.modelsphere.dev/cleanup
+      eventsContain:
+        - KeptRelease

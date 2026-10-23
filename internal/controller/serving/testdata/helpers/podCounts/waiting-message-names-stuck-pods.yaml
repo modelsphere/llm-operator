@@ -1,0 +1,57 @@
+name: waiting-message-names-stuck-pods
+description: the wait message counts blockers and names stuck pods
+inputs:
+  now: "2026-01-02T03:04:05Z"
+  nodesOK: true
+  nodes:
+    - name: gpu-7
+      ready: false
+  pods:
+    - name: c
+      phase: Running
+      node: gpu-7
+    - name: a
+      phase: Running
+      node: gpu-7
+      grace: 30
+      deletionTimestamp: "2026-01-02T03:03:00Z"
+    - name: b
+      phase: Running
+      node: gpu-7
+      grace: 30
+      deletionTimestamp: "2026-01-02T03:03:00Z"
+    - name: d
+      phase: Running
+      node: gpu-7
+    - name: e
+      phase: Running
+      node: gpu-7
+expected:
+  remaining: 3
+  message: waiting for 3 pods (2 stuck on NotReady node gpu-7)
+  pods:
+    - name: a
+      stuck: true
+      phase: Running
+      node: gpu-7
+      grace: 30
+    - name: b
+      stuck: true
+      phase: Running
+      node: gpu-7
+      grace: 30
+    - name: c
+      stuck: false
+      phase: Running
+      node: gpu-7
+      grace: 30
+    - name: d
+      stuck: false
+      phase: Running
+      node: gpu-7
+      grace: 30
+    - name: e
+      stuck: false
+      phase: Running
+      node: gpu-7
+      grace: 30

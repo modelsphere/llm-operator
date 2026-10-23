@@ -1,0 +1,8 @@
+name: route-removing-past-the-deadline
+description: a route still present past the deadline moves to Uninstalling
+inputs:
+  stage: RouteRemoving
+  hasRoute: true
+  pastDeadline: true
+expected:
+  stage: Uninstalling

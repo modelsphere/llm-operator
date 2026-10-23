@@ -1,0 +1,8 @@
+name: uninstalling-does-not-return-to-the-route
+description: Uninstalling does not re-enter the route stages
+inputs:
+  stage: Uninstalling
+  hasRoute: true
+  routeGone: false
+expected:
+  stage: Uninstalling

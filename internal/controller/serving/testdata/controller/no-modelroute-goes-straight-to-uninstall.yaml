@@ -1,0 +1,38 @@
+name: no-modelroute-goes-straight-to-uninstall
+description: no ModelRoute in the manifest goes straight to uninstall
+steps:
+  - action: create
+    version: "0.8.6"
+    finalizers:
+      - serving.modelsphere.dev/finalizer
+  - action: putRelease
+    release:
+      owned: true
+      revision: 1
+      status: deployed
+  - action: setStatus
+    status:
+      chartName: sglang
+  - action: addPod
+    pod:
+      name: engine
+      phase: Running
+  - action: delete
+  - action: reconcile
+    expect:
+      uninstalls: 1
+      phase: Deleting
+      finalizer: present
+      requeue:
+        exact: 5s
+      deletion:
+        stage: PodsTerminating
+        outcome: NoRoute
+        podsRemaining: 1
+        uninstalledAt: true
+        message:
+          equals: waiting for 1 pod
+      eventsContain:
+        - NoRoute
+        - Uninstalled
+        - WaitingForPods

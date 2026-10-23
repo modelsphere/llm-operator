@@ -1,0 +1,11 @@
+name: spec-values
+description: spec values replace the built-in defaults
+inputs:
+  maxWait: 2h
+  routeSettle: 30s
+  forceSet: true
+  forceDeleteAfter: 10s
+expected:
+  maxWait: 2h
+  routeSettle: 30s
+  forceDeleteAfter: 10s

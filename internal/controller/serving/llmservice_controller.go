@@ -82,6 +82,8 @@ type LLMServiceReconciler struct {
 	// AllowedChartRepos are the chart repositories an LLMService may install
 	// from; each allows itself and the paths under it. Empty allows any.
 	AllowedChartRepos []string
+	// Now is the clock for staged deletion. Nil uses time.Now. Tests set it.
+	Now func() time.Time
 }
 
 // +kubebuilder:rbac:groups=serving.modelsphere.dev,resources=llmservices,verbs=get;list;watch;create;update;patch;delete
@@ -90,7 +92,8 @@ type LLMServiceReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=controllerrevisions;deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets;configmaps;services;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;create;patch
-// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;patch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;patch;delete
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch
@@ -125,22 +128,29 @@ func (r *LLMServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 }
 
 func (r *LLMServiceReconciler) reconcileDelete(ctx context.Context, obj *servingv1alpha1.LLMService) (ctrl.Result, error) {
-	if obj.Annotations[servingv1alpha1.AnnotationDeletionPolicy] != servingv1alpha1.DeletionPolicyOrphan {
-		rel, err := r.Helm.Get(ctx, obj.Namespace, obj.Name)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		switch {
-		case rel == nil:
-		case installedOrAdopted(obj, rel):
-			if err := r.Helm.Uninstall(ctx, obj.Namespace, obj.Name); err != nil {
-				return ctrl.Result{}, err
-			}
-			r.event(obj, corev1.EventTypeNormal, "Uninstalled", "Uninstalled helm release")
-		default:
-			r.event(obj, corev1.EventTypeNormal, "KeptRelease", "Kept helm release: this LLMService never installed or adopted it")
-		}
+	if obj.Annotations[servingv1alpha1.AnnotationDeletionPolicy] == servingv1alpha1.DeletionPolicyOrphan {
+		return r.dropFinalizer(ctx, obj)
 	}
+	rel, err := r.Helm.Get(ctx, obj.Namespace, obj.Name)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	// Uninstall removes the release. A later pass still has to wait for pods,
+	// using the stage already stored on the object.
+	if rel == nil {
+		if deletionInProgress(obj) {
+			return r.reconcileStagedDelete(ctx, obj, nil)
+		}
+		return r.dropFinalizer(ctx, obj)
+	}
+	if !installedOrAdopted(obj, rel) {
+		r.event(obj, corev1.EventTypeNormal, servingv1alpha1.ReasonKeptRelease, "Kept helm release: this LLMService never installed or adopted it")
+		return r.dropFinalizer(ctx, obj)
+	}
+	return r.reconcileStagedDelete(ctx, obj, rel)
+}
+
+func (r *LLMServiceReconciler) dropFinalizer(ctx context.Context, obj *servingv1alpha1.LLMService) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(obj, servingv1alpha1.Finalizer) {
 		return ctrl.Result{}, nil
 	}

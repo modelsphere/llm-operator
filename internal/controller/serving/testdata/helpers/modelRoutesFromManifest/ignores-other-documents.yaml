@@ -1,0 +1,21 @@
+name: ignores-other-documents
+description: other kinds and groups are ignored
+inputs:
+  namespace: ns
+  manifest: |
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: cm
+    ---
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: qwen-sglang
+    ---
+    apiVersion: example.com/v1
+    kind: ModelRoute
+    metadata:
+      name: foreign
+expected:
+  routes: []

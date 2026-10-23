@@ -1,0 +1,8 @@
+name: pods-force-due-moves-to-force-deleting
+description: a due force-delete moves to ForceDeleting
+inputs:
+  stage: PodsTerminating
+  podsRemaining: 1
+  forceDue: true
+expected:
+  stage: ForceDeleting
