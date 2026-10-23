@@ -1,0 +1,9 @@
+{{- if .Values.modelRoute.enabled }}
+apiVersion: {{ .Values.modelRoute.apiVersion }}
+kind: ModelRoute
+metadata:
+  name: {{ .Values.modelRoute.name | default .Release.Name }}
+  finalizers:
+    - routing.modelsphere.dev/cleanup
+spec: {}
+{{- end }}

@@ -272,3 +272,23 @@ nodeSelector: {}
 tolerations: []
 
 affinity: {}
+
+# Test stand-in for the engine Deployment. When enabled, templates/deployment.yaml
+# is skipped and templates/mock-deployment.yaml runs a single container with a
+# chosen command, preStop, and grace period. Leave this off for the SGLang shape.
+mockPod:
+  enabled: false
+  image: "busybox:1.36"
+  # Shell command. The default stays up until the pod is deleted.
+  command: "sleep 3600"
+  # Shell command for a preStop hook. Empty disables the hook.
+  preStop: ""
+  terminationGracePeriodSeconds: 60
+
+# Optional ModelRoute in the release, so staged deletion can remove the route
+# before the Deployment. Leave this off unless that CRD is installed.
+modelRoute:
+  enabled: false
+  # Empty uses the release name.
+  name: ""
+  apiVersion: routing.modelsphere.dev/v1alpha1

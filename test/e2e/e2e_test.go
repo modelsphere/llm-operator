@@ -406,6 +406,8 @@ spec:
 		})
 
 	})
+
+	registerDeletionTests()
 })
 
 // serviceAccountToken returns a token for the specified service account in the given namespace.

@@ -1,0 +1,15 @@
+replicaCount: 1
+scaler:
+  enabled: false
+serviceMonitor:
+  enabled: false
+modelCheck:
+  enabled: false
+modelRoute:
+  enabled: false
+mockPod:
+  enabled: true
+  image: busybox:1.36
+  command: "trap '' TERM INT; while true; do sleep 1; done"
+  preStop: ""
+  terminationGracePeriodSeconds: 600

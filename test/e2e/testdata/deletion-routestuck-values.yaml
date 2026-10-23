@@ -1,0 +1,15 @@
+replicaCount: 1
+scaler:
+  enabled: false
+serviceMonitor:
+  enabled: false
+modelCheck:
+  enabled: false
+lifecycle:
+  preStop:
+    enabled: false
+terminationGracePeriodSeconds: 60
+modelRoute:
+  enabled: true
+mockPod:
+  enabled: false

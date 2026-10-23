@@ -25,6 +25,7 @@
 | `layers` | []object | | — | Helm values documents, merged in order. Empty or unset leaves the chart defaults. See below. |
 | `model` | object | | — | Descriptive metadata. Not rendered into the chart. See below. |
 | `suspend` | bool | | `false` | Stop reconciling: no status write and no Helm call. Suspend wins over deletion: a suspended object that is deleting is not uninstalled and keeps its finalizer. |
+| `deletion` | object | | — | Staged teardown budget. See [Staged deletion](#staged-deletion). |
 
 ### `spec.chart`
 
@@ -60,7 +61,7 @@ All fields are optional strings. They are descriptive only: labels, printer colu
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `phase` | string | `Applying`, `Applied`, or `Failed`. The enum also allows `Pending`, which the controller does not set. |
+| `phase` | string | `Applying`, `Applied`, `Failed`, or `Deleting`. The enum also allows `Pending`, which the controller does not set. |
 | `observedGeneration` | int64 | `metadata.generation` last reconciled to a terminal outcome. It stays at the previous generation while `Applying`. |
 | `conditions` | []metav1.Condition | `Applied` and `Adopted`. See [Conditions and events](#conditions-and-events). |
 | `message` | string | The error when `phase` is `Failed`; empty otherwise. |
@@ -70,6 +71,7 @@ All fields are optional strings. They are descriptive only: labels, printer colu
 | `releaseUID` | string | UID of the LLMService that claimed the release. See [Ownership](#ownership). |
 | `helm.revision`, `helm.status` | int, string | The Helm release revision and status last observed. |
 | `history` | []object | Successful applies, newest first, capped by `--llmservice-history-limit`. See below. |
+| `deletion` | object | Staged teardown while the object is deleting. See [Staged deletion](#staged-deletion). |
 
 ### `status.history[]`
 
@@ -201,6 +203,9 @@ A layer with no `values`, or `values: null`, contributes nothing.
 | Annotation | Effect |
 | --- | --- |
 | `serving.modelsphere.dev/deletion-policy: Orphan` | On delete, drop the finalizer and do not uninstall. |
+| `serving.modelsphere.dev/deletion-max-wait` | Overrides `spec.deletion.maxWait`. Read again on every pass. `0s` stops waiting. |
+| `serving.modelsphere.dev/route-settle` | Overrides `spec.deletion.routeSettle`. `0s` skips the settle wait. |
+| `serving.modelsphere.dev/force-delete-after` | Overrides `spec.deletion.forceDeleteAfter`. `0s` force-deletes a terminating pod on the next pass. |
 | `serving.modelsphere.dev/force-conflicts: "<generation>"` | Force field-manager conflicts on the apply for that generation only. Any other value is ignored. Recorded as `forceConflicts` in `status.history`. |
 | `serving.modelsphere.dev/re-resolve: "<any new value>"` | Drop the pinned chart version once and resolve `spec.chart.version` to the newest version in range. See [Chart version](#chart-version). |
 | `swiss.modelsphere.dev/*` | Copied into each history entry and ControllerRevision. Otherwise ignored. |
@@ -223,11 +228,7 @@ A chart-list, credentials, or Helm read error retries with backoff and does not 
 ## Reconcile
 
 1. `spec.suspend` is true: return without writing status or calling Helm.
-2. The object is deleting:
-   - `serving.modelsphere.dev/deletion-policy: Orphan`: drop the finalizer and leave the release.
-   - No release: drop the finalizer.
-   - A release this object installed or adopted (see [Ownership](#ownership)): uninstall it, emit `Uninstalled`, drop the finalizer.
-   - Any other release: keep it, emit `KeptRelease`, drop the finalizer.
+2. The object is deleting. See [Staged deletion](#staged-deletion). Orphan and a release this object never installed or adopted still skip that and drop the finalizer immediately. A kept release emits `KeptRelease`.
 3. Add finalizer `serving.modelsphere.dev/finalizer`.
 4. `spec.chart.repo` is not allowed by `--llmservice-allowed-chart-repos`: `phase: Failed`, `Applied=False` reason `ChartRepoNotAllowed`. Nothing is fetched or applied, and nothing is retried until the spec or annotations change.
 5. Read the credentials Secret, then resolve `spec.chart.version` with the same rule as swiss `chart.Resolve`: an exact version; else the pinned `status.chart.version` while the range allows it, unless a new `serving.modelsphere.dev/re-resolve` value skips the pin; else the newest version the repository lists. An error sets `phase: Failed`, `Applied=False` reason `ChartResolveFailed`, and retries with backoff.
@@ -245,6 +246,50 @@ A chart-list, credentials, or Helm read error retries with backoff and does not 
 
 A successful install, upgrade, or adoption writes a ControllerRevision, prepends a `status.history` entry, and sets `status.chart`, `appliedHash`, `releaseUID`, `helm`, `phase: Applied`, and `observedGeneration`.
 
+## Staged deletion
+
+An LLMService that installed or adopted its release keeps `serving.modelsphere.dev/finalizer` and tears the release down in order. Each pass requeues after 5 seconds and writes status before the step it records. The stage only moves forward, and a restart resumes from the recorded stage and timestamps.
+
+1. Delete every `ModelRoute` in the Helm release manifest (`routing.modelsphere.dev` or `routing.gpucluster.io`) and wait until it is NotFound. The operator does not remove the route finalizer.
+2. Wait `routeSettle` so the gateway can drop the route.
+3. Uninstall the Helm release (`Uninstalled`).
+4. Wait until the release pods are gone. The selectors are `app.kubernetes.io/instance=<release>` and `app=<release>-<status.chart.name>`. Succeeded and Failed pods are ignored. A pod inside its grace period always counts. Past grace, a pod on a NotReady or missing node counts as gone (`stuck: true`). Any other pod counts as gone after grace plus 5 minutes. If the node list cannot be read, only the time rule applies.
+5. Drop the finalizer.
+
+No ModelRoute in the manifest skips straight to uninstall with outcome `NoRoute`. Past `maxWait`, the finalizer is dropped. The outcome is `TimedOut` when pods are still present, unless it is already `RouteStuck`: the route was still there at the deadline, its finalizer stays, and the release is uninstalled anyway. `forceDeleteAfter`, when set, deletes a pod that has been terminating that long with `gracePeriodSeconds: 0` and a UID precondition.
+
+`spec.suspend` still wins: the finalizer stays and nothing is deleted. `serving.modelsphere.dev/deletion-policy: Orphan` skips every stage and leaves the release. A release this object never installed or adopted is kept, with `KeptRelease`, and its ModelRoute is not deleted.
+
+### Knobs
+
+Precedence is annotation, then `spec.deletion`, then the built-in default. Annotations are read on every pass, including ones added after the delete. `deadline` is `startedAt` plus the effective `maxWait`. An invalid annotation emits Warning `InvalidAnnotation` and falls back to the spec or the default. An explicit `0s`, in the spec or an annotation, is a real zero: `routeSettle: 0s` skips the settle wait and `maxWait: 0s` releases on the next pass.
+
+| Spec | Annotation | Default | Effect |
+| --- | --- | --- | --- |
+| `maxWait` | `serving.modelsphere.dev/deletion-max-wait` | `1h` | How long the finalizer may be held. Past it, remaining waits are skipped. |
+| `routeSettle` | `serving.modelsphere.dev/route-settle` | `60s` | Wait after the ModelRoute is NotFound. `0s` skips it. |
+| `forceDeleteAfter` | `serving.modelsphere.dev/force-delete-after` | unset (off) | Force-delete pods that have been terminating this long. `0s` does it on the next pass. |
+
+### `status.deletion`
+
+`status.phase` is `Deleting` while the finalizer is held. `status.message` stays the Helm error field; the human line is `status.deletion.message`.
+
+| Field | Meaning |
+| --- | --- |
+| `stage` | `RouteRemoving`, `RouteSettling`, `Uninstalling`, `PodsTerminating`, `ForceDeleting`, `Released`. |
+| `outcome` | `Clean`, `NoRoute`, `RouteStuck`, `PodsForceDeleted`, `TimedOut`. |
+| `startedAt` | When staged deletion began. |
+| `deadline` | `startedAt` plus the effective `maxWait`, recomputed each pass. |
+| `routeRemovedAt` | When every ModelRoute was first observed NotFound. |
+| `uninstalledAt` | When the Helm uninstall succeeded. |
+| `podsGoneAt` | When no release pods were left to wait for. |
+| `podsRemaining` | How many pods still block the finalizer. |
+| `pods` | Up to 20 pods still in the API, ignoring Succeeded and Failed. Each has `name`, `phase`, `node`, `deletionTimestamp`, `grace`, and `stuck`. |
+| `forceDeleted` | Up to 20 pod names deleted with a zero grace period. |
+| `message` | For example `waiting for 3 pods (2 stuck on NotReady node gpu-7)`. |
+
+Condition `Deleting` uses the same reasons as the events: `RouteRemoving`, `RouteSettling`, `RouteStuck`, `NoRoute`, `Uninstalled`, `WaitingForPods`, `PodsForceDeleted`, `TimedOut`, `Released`. `PodForceDeleted` is one Warning per pod. `InvalidAnnotation` is a Warning whenever an annotation value cannot be parsed.
+
 ## Conditions and events
 
 | Reason | Condition | Phase | Retry | Event |
@@ -261,7 +306,7 @@ A successful install, upgrade, or adoption writes a ControllerRevision, prepends
 | `OperationInProgress` | `Applied=False` | `Applying` | After the time remaining, at least 15s | — |
 | `RecoveredPendingRelease` | `Applied=False` | `Applying` | Applies in the same reconcile | `RecoveredPendingRelease` |
 
-`Failed` means the layers could not be merged or hashed. Deletion emits `Uninstalled` or `KeptRelease`.
+`Failed` means the layers could not be merged or hashed. Deletion also emits the reasons in [Staged deletion](#staged-deletion). `Uninstalled` and `KeptRelease` are unchanged.
 
 ## Revisions
 
@@ -289,4 +334,4 @@ A ControllerRevision is never updated. A name that comes round again, from the s
 
 ## RBAC
 
-The manager role may manage `llmservices`, their status and finalizers, `controllerrevisions`, Helm release Secrets, and `events.k8s.io` events. It also includes the rules the sglang and vllm charts render (secrets, configmaps, services, serviceaccounts, deployments, pod disruption budgets, roles, role bindings, leases, pods, servicemonitors, leaderworkersets, llmscalers, llmslorequirements, modelroutes) plus `namespaces` get, create, and patch.
+The manager role may manage `llmservices`, their status and finalizers, `controllerrevisions`, Helm release Secrets, and `events.k8s.io` events. It also includes the rules the sglang and vllm charts render (secrets, configmaps, services, serviceaccounts, deployments, pod disruption budgets, roles, role bindings, leases, pods, servicemonitors, leaderworkersets, llmscalers, llmslorequirements, modelroutes) plus `namespaces` get, create, and patch. Pods include `delete`, used by force-delete. Nodes are `get`, `list`, and `watch`, used to tell a NotReady node from a slow pod.

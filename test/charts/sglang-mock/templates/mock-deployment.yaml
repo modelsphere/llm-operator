@@ -1,0 +1,31 @@
+{{- if .Values.mockPod.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-sglang
+  labels:
+    app: {{ .Release.Name }}-sglang
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-sglang
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-sglang
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.mockPod.terminationGracePeriodSeconds }}
+      containers:
+      - name: sglang
+        image: {{ .Values.mockPod.image | quote }}
+        command: ["sh", "-c", {{ .Values.mockPod.command | quote }}]
+        {{- with .Values.mockPod.preStop }}
+        lifecycle:
+          preStop:
+            exec:
+              command: ["sh", "-c", {{ . | quote }}]
+        {{- end }}
+{{- end }}
