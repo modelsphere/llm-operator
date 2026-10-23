@@ -306,7 +306,8 @@ func adoptDeletingService(name string, annotations map[string]string) {
 	}
 	body, err := json.Marshal(status)
 	Expect(err).NotTo(HaveOccurred())
-	_, err = kubectl("patch", "llmsvc", name, "-n", deletionNamespace, "--subresource=status", "--type=merge", "-p", string(body))
+	_, err = kubectl("patch", "llmsvc", name, "-n", deletionNamespace,
+		"--subresource=status", "--type=merge", "-p", string(body))
 	Expect(err).NotTo(HaveOccurred())
 
 	_, err = kubectl("delete", "llmsvc", name, "-n", deletionNamespace, "--wait=false")
@@ -399,7 +400,8 @@ func serviceField(name, path string) (string, bool) {
 }
 
 func eventsContain(name, reason string) bool {
-	out, err := kubectl("get", "events", "-n", deletionNamespace, "--field-selector", "involvedObject.name="+name, "-o", "json")
+	out, err := kubectl("get", "events", "-n", deletionNamespace,
+		"--field-selector", "involvedObject.name="+name, "-o", "json")
 	if err != nil {
 		return false
 	}

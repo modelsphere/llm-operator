@@ -380,6 +380,20 @@ func (c *caseRun) step(i int, step serviceStep) {
 		c.setStatus(step)
 	case "setStatusReleaseUID":
 		c.setStatusReleaseUID()
+	default:
+		if !c.deletionStep(step) {
+			Fail(fmt.Sprintf("%s: step %d unknown action %q", c.tc.Name, i+1, step.Action))
+		}
+	}
+	if step.Expect != nil && step.Action != "reconcile" && step.Action != "reconcileHeld" {
+		c.check(step.Expect, reconcile.Result{}, nil, helmSnap{}, false)
+	}
+}
+
+// deletionStep runs the staged-deletion step actions. It reports false for
+// an action it does not know.
+func (c *caseRun) deletionStep(step serviceStep) bool {
+	switch step.Action {
 	case "addPod":
 		c.addPod(step)
 	case "removePod":
@@ -397,11 +411,9 @@ func (c *caseRun) step(i int, step serviceStep) {
 	case "freshReconciler":
 		c.freshReconciler()
 	default:
-		Fail(fmt.Sprintf("%s: step %d unknown action %q", c.tc.Name, i+1, step.Action))
+		return false
 	}
-	if step.Expect != nil && step.Action != "reconcile" && step.Action != "reconcileHeld" {
-		c.check(step.Expect, reconcile.Result{}, nil, helmSnap{}, false)
-	}
+	return true
 }
 
 func stepRequiresExpect(action string) bool {
