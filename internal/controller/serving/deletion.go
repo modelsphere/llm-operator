@@ -249,8 +249,7 @@ func (r *LLMServiceReconciler) advanceRouteSettling(ctx context.Context, obj *se
 		if err := r.putDeletion(ctx, obj, del, servingv1alpha1.ReasonRouteSettling, msgSettle, corev1.EventTypeNormal); err != nil {
 			return ctrl.Result{}, err
 		}
-		ready := del.RouteRemovedAt.Add(knobs.routeSettle)
-		return ctrl.Result{RequeueAfter: ready.Sub(now)}, nil
+		return ctrl.Result{RequeueAfter: settleReadyAt(del, knobs).Sub(now)}, nil
 	}
 	del.Stage = nextStage(stageInput{
 		Stage:        servingv1alpha1.DeletionStageRouteSettling,
@@ -260,11 +259,22 @@ func (r *LLMServiceReconciler) advanceRouteSettling(ctx context.Context, obj *se
 	return ctrl.Result{}, nil
 }
 
+// settleReadyAt is the end of the route-settle wait: the earlier of
+// routeRemovedAt+routeSettle and the deletion deadline. A longer routeSettle
+// must not hold the finalizer past maxWait.
+func settleReadyAt(del *servingv1alpha1.DeletionStatus, knobs deletionKnobs) time.Time {
+	ready := del.RouteRemovedAt.Add(knobs.routeSettle)
+	if del.Deadline != nil && del.Deadline.Time.Before(ready) {
+		return del.Deadline.Time
+	}
+	return ready
+}
+
 func settleDone(del *servingv1alpha1.DeletionStatus, knobs deletionKnobs, now time.Time, past bool) bool {
 	if past || del.RouteRemovedAt == nil {
 		return past
 	}
-	return !now.Before(del.RouteRemovedAt.Add(knobs.routeSettle))
+	return !now.Before(settleReadyAt(del, knobs))
 }
 
 func (r *LLMServiceReconciler) advanceUninstall(ctx context.Context, obj *servingv1alpha1.LLMService, del *servingv1alpha1.DeletionStatus, now time.Time) error {

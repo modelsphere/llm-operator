@@ -1,0 +1,46 @@
+name: route-settle-longer-than-maxwait-requeues-until-the-deadline
+description: routeSettle longer than maxWait requeues until the deadline, then uninstalls
+steps:
+  - action: create
+    version: "0.8.6"
+    finalizers:
+      - serving.modelsphere.dev/finalizer
+    deletion:
+      maxWait: 1h
+      routeSettle: 2h
+  - action: putRelease
+    release:
+      owned: true
+      revision: 1
+      status: deployed
+      manifest: |
+        apiVersion: routing.modelsphere.dev/v1alpha1
+        kind: ModelRoute
+        metadata:
+          name: qwen
+  - action: addRoute
+    route:
+      name: qwen
+  - action: delete
+  - action: reconcile
+    expect:
+      uninstalls: 0
+      phase: Deleting
+      finalizer: present
+      requeue:
+        exact: 1h
+      deletion:
+        stage: RouteSettling
+        routeRemovedAt: true
+        message:
+          equals: waiting for the ModelRoute to settle
+      route:
+        notFound: true
+  - action: advanceClock
+    advance: 1h
+  - action: reconcile
+    expect:
+      uninstalls: 1
+      notFound: true
+      eventsContain:
+        - Uninstalled

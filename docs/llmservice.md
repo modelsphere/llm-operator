@@ -262,7 +262,7 @@ No ModelRoute in the manifest skips straight to uninstall with outcome `NoRoute`
 
 ### Knobs
 
-Precedence is annotation, then `spec.deletion`, then the built-in default. Annotations are read on every pass, including ones added after the delete. `deadline` is `startedAt` plus the effective `maxWait`. An invalid annotation emits Warning `InvalidAnnotation` and falls back to the spec or the default. An explicit `0s`, in the spec or an annotation, is a real zero: `routeSettle: 0s` skips the settle wait and `maxWait: 0s` releases on the next pass.
+Precedence is annotation, then `spec.deletion`, then the built-in default. Annotations are read on every pass, including ones added after the delete. Annotation changes during deletion, such as lowering `serving.modelsphere.dev/deletion-max-wait`, setting `serving.modelsphere.dev/force-delete-after: 0s`, or adding `serving.modelsphere.dev/deletion-policy: Orphan`, take effect on the next pass. `deadline` is `startedAt` plus the effective `maxWait`. An invalid annotation emits Warning `InvalidAnnotation` and falls back to the spec or the default. An explicit `0s`, in the spec or an annotation, is a real zero: `routeSettle: 0s` skips the settle wait and `maxWait: 0s` releases on the next pass.
 
 | Spec | Annotation | Default | Effect |
 | --- | --- | --- | --- |
