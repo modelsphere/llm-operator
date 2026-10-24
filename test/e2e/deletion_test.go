@@ -237,14 +237,9 @@ func registerDeletionTests() {
 				"serving.modelsphere.dev/deletion-max-wait": "15s",
 			})
 
-			seen := false
 			Eventually(func(g Gomega) {
-				outcome, exists := deletionOutcome(release)
-				if exists && outcome == "RouteStuck" {
-					seen = true
-				}
-				g.Expect(seen).To(BeTrue())
-			}, 2*time.Minute, 200*time.Millisecond).Should(Succeed())
+				g.Expect(eventsContain(release, "RouteStuck")).To(BeTrue())
+			}, 2*time.Minute, time.Second).Should(Succeed())
 
 			Eventually(func(g Gomega) {
 				g.Expect(serviceExists(release)).To(BeFalse())
@@ -387,10 +382,6 @@ func deletionStage(name string) string {
 	return out
 }
 
-func deletionOutcome(name string) (string, bool) {
-	return serviceField(name, "{.status.deletion.outcome}")
-}
-
 func serviceField(name, path string) (string, bool) {
 	out, err := kubectl("get", "llmsvc", name, "-n", deletionNamespace, "-o", "jsonpath="+path)
 	if err != nil {
@@ -401,7 +392,7 @@ func serviceField(name, path string) (string, bool) {
 
 func eventsContain(name, reason string) bool {
 	out, err := kubectl("get", "events", "-n", deletionNamespace,
-		"--field-selector", "involvedObject.name="+name, "-o", "json")
+		"--field-selector", "involvedObject.kind=LLMService,involvedObject.name="+name, "-o", "json")
 	if err != nil {
 		return false
 	}
