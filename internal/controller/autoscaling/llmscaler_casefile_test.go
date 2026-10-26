@@ -112,6 +112,7 @@ type stepInput struct {
 	SnapshotStatus bool           `json:"snapshotStatus"`
 	DeleteDeploy   bool           `json:"deleteDeploy"`
 	APIVersion     string         `json:"apiVersion"`
+	MaxReplicas    *int32         `json:"maxReplicas"`
 }
 
 type condInput struct {
@@ -119,6 +120,7 @@ type condInput struct {
 	Reason                    string   `json:"reason"`
 	MessageContains           []string `json:"messageContains"`
 	ObservedGenerationCurrent bool     `json:"observedGenerationCurrent"`
+	ObservedGenerationStale   bool     `json:"observedGenerationStale"`
 }
 
 func (c condInput) expect() condExpect {
@@ -127,6 +129,7 @@ func (c condInput) expect() condExpect {
 		reason:                    c.Reason,
 		messageContains:           c.MessageContains,
 		observedGenerationCurrent: c.ObservedGenerationCurrent,
+		observedGenerationStale:   c.ObservedGenerationStale,
 	}
 }
 
@@ -140,35 +143,40 @@ func (e eventInput) expect() eventExpect {
 }
 
 type stepExpected struct {
-	Replicas                  *int32          `json:"replicas"`
-	Desired                   *int32          `json:"desired"`
-	Applied                   *int32          `json:"applied"`
-	Current                   *int32          `json:"current"`
-	DeferredSince             sinceCheck      `json:"deferredSince"`
-	Condition                 *condInput      `json:"condition"`
-	RequeueAfter              *cases.Duration `json:"requeueAfter"`
-	Events                    []eventInput    `json:"events"`
-	NoMoreEvents              bool            `json:"noMoreEvents"`
-	ForcedWrite               *bool           `json:"forcedWrite"`
-	ForcedWriteAt             *cases.Duration `json:"forcedWriteAt"`
-	Ready                     *condInput      `json:"ready"`
-	ObservedGenerationCurrent bool            `json:"observedGenerationCurrent"`
-	LastScaleTime             string          `json:"lastScaleTime"`
+	Replicas                            *int32          `json:"replicas"`
+	Desired                             *int32          `json:"desired"`
+	Applied                             *int32          `json:"applied"`
+	Current                             *int32          `json:"current"`
+	DeferredSince                       sinceCheck      `json:"deferredSince"`
+	Condition                           *condInput      `json:"condition"`
+	RequeueAfter                        *cases.Duration `json:"requeueAfter"`
+	Events                              []eventInput    `json:"events"`
+	NoMoreEvents                        bool            `json:"noMoreEvents"`
+	ForcedWrite                         *bool           `json:"forcedWrite"`
+	ForcedWriteAt                       *cases.Duration `json:"forcedWriteAt"`
+	Ready                               *condInput      `json:"ready"`
+	Decision                            *condInput      `json:"decision"`
+	ObservedGenerationCurrent           bool            `json:"observedGenerationCurrent"`
+	ConditionsObservedGenerationCurrent bool            `json:"conditionsObservedGenerationCurrent"`
+	GenerationGreaterThan               int64           `json:"generationGreaterThan"`
+	LastScaleTime                       string          `json:"lastScaleTime"`
 }
 
 func (e stepExpected) expect() stepExpect {
 	out := stepExpect{
-		replicas:                  e.Replicas,
-		desired:                   e.Desired,
-		applied:                   e.Applied,
-		current:                   e.Current,
-		deferredSince:             e.DeferredSince.expect(),
-		requeueAfter:              durPtr(e.RequeueAfter),
-		noMoreEvents:              e.NoMoreEvents,
-		forcedWrite:               e.ForcedWrite,
-		forcedWriteAt:             durPtr(e.ForcedWriteAt),
-		observedGenerationCurrent: e.ObservedGenerationCurrent,
-		lastScaleTime:             parseLastScale(e.LastScaleTime),
+		replicas:                            e.Replicas,
+		desired:                             e.Desired,
+		applied:                             e.Applied,
+		current:                             e.Current,
+		deferredSince:                       e.DeferredSince.expect(),
+		requeueAfter:                        durPtr(e.RequeueAfter),
+		noMoreEvents:                        e.NoMoreEvents,
+		forcedWrite:                         e.ForcedWrite,
+		forcedWriteAt:                       durPtr(e.ForcedWriteAt),
+		observedGenerationCurrent:           e.ObservedGenerationCurrent,
+		conditionsObservedGenerationCurrent: e.ConditionsObservedGenerationCurrent,
+		generationGreaterThan:               e.GenerationGreaterThan,
+		lastScaleTime:                       parseLastScale(e.LastScaleTime),
 	}
 	if e.Condition != nil {
 		cond := e.Condition.expect()
@@ -177,6 +185,10 @@ func (e stepExpected) expect() stepExpect {
 	if e.Ready != nil {
 		ready := e.Ready.expect()
 		out.ready = &ready
+	}
+	if e.Decision != nil {
+		decision := e.Decision.expect()
+		out.decision = &decision
 	}
 	if len(e.Events) > 0 {
 		out.events = make([]eventExpect, len(e.Events))
@@ -199,6 +211,7 @@ func (s stepInput) step(exp stepExpected) scenarioStep {
 		snapshotStatus: s.SnapshotStatus,
 		deleteDeploy:   s.DeleteDeploy,
 		apiVersion:     s.APIVersion,
+		maxReplicas:    s.MaxReplicas,
 		expect:         exp.expect(),
 	}
 	if s.Deploy != nil {
@@ -294,6 +307,7 @@ type customReconcileFile struct {
 		DecisionStatus            string     `json:"decisionStatus"`
 		DecisionReason            string     `json:"decisionReason"`
 		DecisionMessageNonEmpty   bool       `json:"decisionMessageNonEmpty"`
+		DecisionMessageContains   []string   `json:"decisionMessageContains"`
 		Ready                     *condInput `json:"ready"`
 		ObservedGenerationCurrent bool       `json:"observedGenerationCurrent"`
 		LastScaleTime             string     `json:"lastScaleTime"`
@@ -316,6 +330,7 @@ func runCustomReconcileFile(c customReconcileFile) {
 		decisionStatus:            metav1.ConditionStatus(exp.DecisionStatus),
 		decisionReason:            exp.DecisionReason,
 		decisionMessageNonEmpty:   exp.DecisionMessageNonEmpty,
+		decisionMessageContains:   exp.DecisionMessageContains,
 		observedGenerationCurrent: exp.ObservedGenerationCurrent,
 		lastScaleTime:             parseLastScale(exp.LastScaleTime),
 		mirrorDecisionMessage:     exp.MirrorDecisionMessage,

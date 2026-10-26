@@ -24,5 +24,12 @@
       "messageContains":
       - "scaled 1 -> 2"
       "observedGenerationCurrent": true
+    "decision":
+      "status": "True"
+      "reason": "MetricsAvailable"
+      "messageContains":
+      - "evaluated 1 of 1 metrics"
+      - "recommends 2 replicas"
+      "observedGenerationCurrent": true
     "lastScaleTime": "set"
     "observedGenerationCurrent": true

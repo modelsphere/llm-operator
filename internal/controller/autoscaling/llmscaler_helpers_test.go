@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -381,7 +382,7 @@ func TestComputeDesiredFromMetrics(t *testing.T) {
 				}},
 			},
 		}
-		desired, haveMetric, hold := (&LLMScalerReconciler{}).computeDesiredFromMetrics(
+		desired, haveMetric := (&LLMScalerReconciler{}).computeDesiredFromMetrics(
 			context.Background(), scaler, tc.Inputs.Ready)
 		if haveMetric != tc.Expected.Have {
 			t.Errorf("haveMetric = %v, want %v", haveMetric, tc.Expected.Have)
@@ -389,15 +390,26 @@ func TestComputeDesiredFromMetrics(t *testing.T) {
 		if desired != tc.Expected.Desired {
 			t.Errorf("desired = %d, want %d", desired, tc.Expected.Desired)
 		}
+		decision := meta.FindStatusCondition(scaler.Status.Conditions, autoscalingv1alpha1.ConditionDecisionAvailable)
+		if decision == nil {
+			t.Fatal("DecisionAvailable condition missing")
+		}
 		if !tc.Expected.Have {
-			if hold.reason != autoscalingv1alpha1.ReasonMetricsUnavailable {
-				t.Errorf("hold reason = %q, want %q", hold.reason, autoscalingv1alpha1.ReasonMetricsUnavailable)
+			if decision.Status != metav1.ConditionFalse || decision.Reason != autoscalingv1alpha1.ReasonDecisionUnavailable {
+				t.Errorf("DecisionAvailable = %s/%s, want False/%s", decision.Status, decision.Reason, autoscalingv1alpha1.ReasonDecisionUnavailable)
 			}
-			if !strings.Contains(hold.message, "no metric could be evaluated; holding replicas") {
-				t.Errorf("hold message = %q, want it to name the held replicas", hold.message)
+			if !strings.Contains(decision.Message, "no prometheus metric could be evaluated") {
+				t.Errorf("DecisionAvailable message = %q, want it to name prometheus", decision.Message)
 			}
-		} else if hold.reason != "" {
-			t.Errorf("hold reason = %q, want none", hold.reason)
+		} else {
+			if decision.Status != metav1.ConditionTrue || decision.Reason != autoscalingv1alpha1.ReasonMetricsAvailable {
+				t.Errorf("DecisionAvailable = %s/%s, want True/%s", decision.Status, decision.Reason, autoscalingv1alpha1.ReasonMetricsAvailable)
+			}
+			// The message names the raw maximum, which this helper returns before clamping.
+			want := fmt.Sprintf("recommends %d replicas", desired)
+			if !strings.Contains(decision.Message, want) || !strings.Contains(decision.Message, "evaluated 1 of 1 metrics") {
+				t.Errorf("DecisionAvailable message = %q, want it to contain %q and the evaluation count", decision.Message, want)
+			}
 		}
 	})
 }

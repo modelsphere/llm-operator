@@ -138,6 +138,10 @@ func TestTargetWriteFailedRecordsReady(t *testing.T) {
 	if able.ObservedGeneration != got.Generation {
 		t.Errorf("AbleToScale.observedGeneration = %d, want %d", able.ObservedGeneration, got.Generation)
 	}
+	// The recommendation was computed before the write failed, so
+	// DecisionAvailable from this sync is kept. Ready still copies AbleToScale.
+	assertDecisionAvailable(t, got, metav1.ConditionTrue, autoscalingv1alpha1.ReasonMetricsAvailable,
+		"evaluated 1 of 1 metrics; recommends 2 replicas")
 
 	deploy := &appsv1.Deployment{}
 	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "ns", Name: "d"}, deploy); err != nil {
@@ -165,6 +169,15 @@ func TestTargetUnreadableRecordsAbleToScale(t *testing.T) {
 		AppliedReplicas: 4,
 		DeferredSince:   &deferred,
 	}
+	// A stale signal from an earlier sync must not decide Ready, and the read
+	// failure must leave the condition alone.
+	meta.SetStatusCondition(&scaler.Status.Conditions, metav1.Condition{
+		Type:               autoscalingv1alpha1.ConditionDecisionAvailable,
+		Status:             metav1.ConditionFalse,
+		Reason:             autoscalingv1alpha1.ReasonDecisionUnavailable,
+		Message:            "stale custom decision",
+		ObservedGeneration: 1,
+	})
 
 	scheme := statusScheme(t)
 	c := fake.NewClientBuilder().
@@ -208,6 +221,14 @@ func TestTargetUnreadableRecordsAbleToScale(t *testing.T) {
 	if !strings.Contains(ready.Message, "injected read failure") {
 		t.Errorf("Ready message = %q, want the injected error", ready.Message)
 	}
+	if ready.ObservedGeneration != got.Generation {
+		t.Errorf("Ready.observedGeneration = %d, want %d", ready.ObservedGeneration, got.Generation)
+	}
+	decision := meta.FindStatusCondition(got.Status.Conditions, autoscalingv1alpha1.ConditionDecisionAvailable)
+	if decision == nil || decision.Status != metav1.ConditionFalse || decision.Reason != autoscalingv1alpha1.ReasonDecisionUnavailable ||
+		decision.Message != "stale custom decision" || decision.ObservedGeneration != 1 {
+		t.Errorf("DecisionAvailable = %+v, want the seeded condition left untouched", decision)
+	}
 	able := meta.FindStatusCondition(got.Status.Conditions, autoscalingv1alpha1.ConditionAbleToScale)
 	if able == nil {
 		t.Fatal("AbleToScale condition missing")
@@ -234,8 +255,9 @@ func TestTargetUnreadableRecordsAbleToScale(t *testing.T) {
 }
 
 // TestMissingCustomProviderRecordsInvalidSpec runs the admission-rejected
-// pairing through the controller. The fleet stays where it is, and Ready
-// records InvalidSpec without a DecisionAvailable condition.
+// pairing through the controller. The fleet stays where it is. Ready and
+// DecisionAvailable are False/InvalidSpec; AbleToScale still describes the
+// scale decision.
 func TestMissingCustomProviderRecordsInvalidSpec(t *testing.T) {
 	scaler := prometheusScaler("http://127.0.0.1:9")
 	scaler.Spec.MetricProvider = autoscalingv1alpha1.MetricProviderCustom
@@ -270,9 +292,7 @@ func TestMissingCustomProviderRecordsInvalidSpec(t *testing.T) {
 	if ready.Message != "spec.customProvider is not set" {
 		t.Errorf("Ready message = %q", ready.Message)
 	}
-	if meta.FindStatusCondition(got.Status.Conditions, autoscalingv1alpha1.ConditionDecisionAvailable) != nil {
-		t.Error("DecisionAvailable was set; a missing customProvider does not query")
-	}
+	assertDecisionAvailable(t, got, metav1.ConditionFalse, autoscalingv1alpha1.ReasonInvalidSpec, ready.Message)
 	able := meta.FindStatusCondition(got.Status.Conditions, autoscalingv1alpha1.ConditionAbleToScale)
 	if able == nil {
 		t.Fatal("AbleToScale condition missing")
@@ -303,6 +323,99 @@ func TestMissingCustomProviderRecordsInvalidSpec(t *testing.T) {
 	}
 	if deploy.Spec.Replicas == nil || *deploy.Spec.Replicas != 1 {
 		t.Errorf("deployment replicas = %v, want 1", deploy.Spec.Replicas)
+	}
+}
+
+// TestMetricProviderSwitchOverwritesDecisionAvailable reconciles a Custom
+// scaler, switches it to Prometheus, then switches it back. Each sync that
+// reaches a recommendation overwrites DecisionAvailable, so neither provider's
+// condition lingers.
+func TestMetricProviderSwitchOverwritesDecisionAvailable(t *testing.T) {
+	prom := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprintf(w, `{"status":"success","data":{"result":[{"value":[0,"%s"]}]}}`, "0.5")
+	}))
+	defer prom.Close()
+	decisionSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprintf(w,
+			`{"apiVersion":%q,"decisions":[{"serviceId":"svc","replicas":{"active":1}}]}`,
+			decisionsAPIVersion)
+	}))
+	defer decisionSrv.Close()
+
+	scaler := prometheusScaler(decisionSrv.URL)
+	scaler.Spec.MetricProvider = autoscalingv1alpha1.MetricProviderCustom
+	scaler.Spec.CustomProvider = &autoscalingv1alpha1.CustomProviderSpec{ServiceID: "svc"}
+
+	scheme := statusScheme(t)
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(rolledDeployment(), scaler).
+		WithStatusSubresource(&autoscalingv1alpha1.LLMScaler{}).
+		Build()
+	rec := &LLMScalerReconciler{Client: c, Scheme: scheme}
+	key := types.NamespacedName{Namespace: scaler.Namespace, Name: scaler.Name}
+	req := reconcile.Request{NamespacedName: key}
+
+	reconcileAndGet := func() *autoscalingv1alpha1.LLMScaler {
+		t.Helper()
+		if _, err := rec.Reconcile(context.Background(), req); err != nil {
+			t.Fatalf("Reconcile error = %v", err)
+		}
+		got := &autoscalingv1alpha1.LLMScaler{}
+		if err := c.Get(context.Background(), key, got); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	setProvider := func(provider, server string) {
+		t.Helper()
+		got := &autoscalingv1alpha1.LLMScaler{}
+		if err := c.Get(context.Background(), key, got); err != nil {
+			t.Fatal(err)
+		}
+		got.Spec.MetricProvider = provider
+		got.Spec.ServerAddress = server
+		if err := c.Update(context.Background(), got); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertSynced := func(got *autoscalingv1alpha1.LLMScaler, reason, message string) {
+		t.Helper()
+		assertDecisionAvailable(t, got, metav1.ConditionTrue, reason, message)
+		ready := meta.FindStatusCondition(got.Status.Conditions, autoscalingv1alpha1.ConditionReady)
+		if ready == nil || ready.Status != metav1.ConditionTrue || ready.Reason != autoscalingv1alpha1.ReasonSynced {
+			t.Errorf("Ready = %+v, want True/Synced", ready)
+		}
+	}
+
+	got := reconcileAndGet()
+	assertSynced(got, autoscalingv1alpha1.ReasonDecisionReceived, "decision server recommends 1 replicas")
+
+	setProvider(autoscalingv1alpha1.MetricProviderPrometheus, prom.URL)
+	got = reconcileAndGet()
+	assertSynced(got, autoscalingv1alpha1.ReasonMetricsAvailable, "evaluated 1 of 1 metrics; recommends 1 replicas")
+
+	setProvider(autoscalingv1alpha1.MetricProviderCustom, decisionSrv.URL)
+	got = reconcileAndGet()
+	assertSynced(got, autoscalingv1alpha1.ReasonDecisionReceived, "decision server recommends 1 replicas")
+}
+
+// assertDecisionAvailable checks the signal condition written on this sync,
+// including the generation it was computed from.
+func assertDecisionAvailable(t *testing.T, got *autoscalingv1alpha1.LLMScaler, status metav1.ConditionStatus, reason, message string) {
+	t.Helper()
+	decision := meta.FindStatusCondition(got.Status.Conditions, autoscalingv1alpha1.ConditionDecisionAvailable)
+	if decision == nil {
+		t.Fatal("DecisionAvailable condition missing")
+	}
+	if decision.Status != status || decision.Reason != reason {
+		t.Errorf("DecisionAvailable = %s/%s, want %s/%s", decision.Status, decision.Reason, status, reason)
+	}
+	if decision.Message != message {
+		t.Errorf("DecisionAvailable message = %q, want %q", decision.Message, message)
+	}
+	if decision.ObservedGeneration != got.Generation {
+		t.Errorf("DecisionAvailable.observedGeneration = %d, want %d", decision.ObservedGeneration, got.Generation)
 	}
 }
 

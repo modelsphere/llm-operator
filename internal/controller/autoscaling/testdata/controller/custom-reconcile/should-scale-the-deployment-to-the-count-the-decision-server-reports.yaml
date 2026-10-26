@@ -10,6 +10,9 @@
   "replicas": 4
   "desired": 4
   "decisionStatus": "True"
+  "decisionReason": "DecisionReceived"
+  "decisionMessageContains":
+  - "decision server recommends 4 replicas"
   "ready":
     "status": "True"
     "reason": "Synced"

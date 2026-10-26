@@ -1,0 +1,58 @@
+# metric 0.5 over target 0.5 is already spec, so both syncs are no-ops.
+# Raising maxReplicas bumps metadata.generation. The second sync records that
+# generation on status.observedGeneration and on every condition.
+"name": "should-record-the-new-generation-after-a-spec-change"
+"description": "should record the new generation after a spec change"
+"inputs":
+  "metric": "0.5"
+  "steps":
+  - "by": "reconciling once at the current generation"
+    "at": "0s"
+  - "by": "raising maxReplicas and reconciling again"
+    "at": "0s"
+    "maxReplicas": 9
+"expected":
+  "steps":
+  - "replicas": 1
+    "desired": 1
+    "applied": 1
+    "current": 1
+    "condition":
+      "status": "True"
+      "reason": "Synced"
+      "observedGenerationCurrent": true
+    "ready":
+      "status": "True"
+      "reason": "Synced"
+      "messageContains":
+      - "replica count is at the step target"
+      "observedGenerationCurrent": true
+    "decision":
+      "status": "True"
+      "reason": "MetricsAvailable"
+      "messageContains":
+      - "evaluated 1 of 1 metrics"
+      - "recommends 1 replicas"
+      "observedGenerationCurrent": true
+    "observedGenerationCurrent": true
+    "conditionsObservedGenerationCurrent": true
+  - "replicas": 1
+    "desired": 1
+    "condition":
+      "status": "True"
+      "reason": "Synced"
+      "observedGenerationCurrent": true
+    "ready":
+      "status": "True"
+      "reason": "Synced"
+      "observedGenerationCurrent": true
+    "decision":
+      "status": "True"
+      "reason": "MetricsAvailable"
+      "messageContains":
+      - "evaluated 1 of 1 metrics"
+      - "recommends 1 replicas"
+      "observedGenerationCurrent": true
+    "observedGenerationCurrent": true
+    "conditionsObservedGenerationCurrent": true
+    "generationGreaterThan": 1

@@ -148,6 +148,7 @@ type scenarioStep struct {
 	snapshotStatus bool
 	deleteDeploy   bool
 	apiVersion     string
+	maxReplicas    *int32
 	expect         stepExpect
 }
 
@@ -183,20 +184,23 @@ func parseLastScale(s string) lastScaleExpect {
 // stepExpect is the assertions for one step. Nil pointers and the zero
 // sinceExpect are skipped, so a step only states what that beat checked.
 type stepExpect struct {
-	replicas                  *int32
-	desired                   *int32
-	applied                   *int32
-	current                   *int32
-	deferredSince             sinceExpect
-	condition                 *condExpect
-	requeueAfter              *time.Duration
-	events                    []eventExpect
-	noMoreEvents              bool
-	forcedWrite               *bool
-	forcedWriteAt             *time.Duration
-	ready                     *condExpect
-	observedGenerationCurrent bool
-	lastScaleTime             lastScaleExpect
+	replicas                            *int32
+	desired                             *int32
+	applied                             *int32
+	current                             *int32
+	deferredSince                       sinceExpect
+	condition                           *condExpect
+	requeueAfter                        *time.Duration
+	events                              []eventExpect
+	noMoreEvents                        bool
+	forcedWrite                         *bool
+	forcedWriteAt                       *time.Duration
+	ready                               *condExpect
+	decision                            *condExpect
+	observedGenerationCurrent           bool
+	conditionsObservedGenerationCurrent bool
+	generationGreaterThan               int64
+	lastScaleTime                       lastScaleExpect
 }
 
 // condExpect is one status condition. messageContains are substrings that
@@ -207,6 +211,9 @@ type condExpect struct {
 	reason                    string
 	messageContains           []string
 	observedGenerationCurrent bool
+	// observedGenerationStale requires ObservedGeneration to differ from the
+	// scaler's generation: a later sync left a condition written earlier alone.
+	observedGenerationStale bool
 }
 
 // eventExpect is one event in the order the recorder received it.
@@ -580,6 +587,9 @@ func runScenarioStep(run *scenarioRun, step scenarioStep) {
 	if step.apiVersion != "" {
 		setTargetAPIVersion(f.ctx, f.scaler, step.apiVersion)
 	}
+	if step.maxReplicas != nil {
+		patchMaxReplicas(f.ctx, f.scaler, *step.maxReplicas)
+	}
 	var prevLastScale *metav1.Time
 	if step.expect.lastScaleTime == lastScaleUnchanged {
 		prevLastScale = scalerLastScaleTime(f.ctx, f.scaler)
@@ -631,7 +641,9 @@ func assertScalerStatus(run *scenarioRun, step scenarioStep, prevLastScale *meta
 	exp := step.expect
 	if exp.desired == nil && exp.applied == nil && exp.current == nil &&
 		exp.deferredSince.kind == sinceUnchecked && exp.condition == nil &&
-		exp.ready == nil && !exp.observedGenerationCurrent && exp.lastScaleTime == lastScaleSkip {
+		exp.ready == nil && exp.decision == nil && !exp.observedGenerationCurrent &&
+		!exp.conditionsObservedGenerationCurrent && exp.generationGreaterThan == 0 &&
+		exp.lastScaleTime == lastScaleSkip {
 		return
 	}
 	scaler := &autoscalingv1alpha1.LLMScaler{}
@@ -652,8 +664,21 @@ func assertScalerStatus(run *scenarioRun, step scenarioStep, prevLastScale *meta
 	if exp.ready != nil {
 		assertCondition(scaler, autoscalingv1alpha1.ConditionReady, *exp.ready)
 	}
+	if exp.decision != nil {
+		assertCondition(scaler, autoscalingv1alpha1.ConditionDecisionAvailable, *exp.decision)
+	}
 	if exp.observedGenerationCurrent {
 		Expect(scaler.Status.ObservedGeneration).To(Equal(scaler.Generation))
+	}
+	if exp.generationGreaterThan > 0 {
+		Expect(scaler.Generation).To(BeNumerically(">", exp.generationGreaterThan))
+	}
+	if exp.conditionsObservedGenerationCurrent {
+		Expect(scaler.Status.Conditions).NotTo(BeEmpty())
+		for i := range scaler.Status.Conditions {
+			Expect(scaler.Status.Conditions[i].ObservedGeneration).To(Equal(scaler.Generation),
+				"condition %s observedGeneration", scaler.Status.Conditions[i].Type)
+		}
 	}
 	assertLastScaleTime(scaler.Status.LastScaleTime, exp.lastScaleTime, prevLastScale, deferralStart.Add(step.at), run.clk != nil && !step.skipReconcile)
 }
@@ -692,8 +717,14 @@ func assertCondition(scaler *autoscalingv1alpha1.LLMScaler, condType string, exp
 		}
 		Expect(cond.Message).To(ContainSubstring(sub))
 	}
+	if exp.observedGenerationCurrent && exp.observedGenerationStale {
+		Fail("observedGenerationCurrent and observedGenerationStale are both set")
+	}
 	if exp.observedGenerationCurrent {
 		Expect(cond.ObservedGeneration).To(Equal(scaler.Generation))
+	}
+	if exp.observedGenerationStale {
+		Expect(cond.ObservedGeneration).NotTo(Equal(scaler.Generation))
 	}
 }
 
@@ -775,6 +806,13 @@ func deleteDeployment(ctx context.Context, nn types.NamespacedName) {
 	Expect(k8sClient.Delete(ctx, deploy)).To(Succeed())
 }
 
+func patchMaxReplicas(ctx context.Context, nn types.NamespacedName, maxReplicas int32) {
+	scaler := &autoscalingv1alpha1.LLMScaler{}
+	Expect(k8sClient.Get(ctx, nn, scaler)).To(Succeed())
+	scaler.Spec.MaxReplicas = maxReplicas
+	Expect(k8sClient.Update(ctx, scaler)).To(Succeed())
+}
+
 func setTargetAPIVersion(ctx context.Context, nn types.NamespacedName, apiVersion string) {
 	scaler := &autoscalingv1alpha1.LLMScaler{}
 	Expect(k8sClient.Get(ctx, nn, scaler)).To(Succeed())
@@ -807,6 +845,7 @@ type customReconcileCase struct {
 	decisionStatus            metav1.ConditionStatus
 	decisionReason            string
 	decisionMessageNonEmpty   bool
+	decisionMessageContains   []string
 	ready                     *condExpect
 	observedGenerationCurrent bool
 	lastScaleTime             lastScaleExpect
@@ -847,7 +886,8 @@ func runCustomProviderReconcile(tc customReconcileCase) {
 	Expect(deploymentReplicas(f.ctx, f.deploy)).To(Equal(tc.wantReplicas))
 
 	needStatus := tc.wantDesired != nil || tc.decisionStatus != "" || tc.ready != nil ||
-		tc.observedGenerationCurrent || tc.lastScaleTime != lastScaleSkip || tc.mirrorDecisionMessage
+		tc.observedGenerationCurrent || tc.lastScaleTime != lastScaleSkip || tc.mirrorDecisionMessage ||
+		len(tc.decisionMessageContains) > 0
 	if !needStatus {
 		return
 	}
@@ -864,7 +904,7 @@ func runCustomProviderReconcile(tc customReconcileCase) {
 	}
 	assertLastScaleTime(scaler.Status.LastScaleTime, tc.lastScaleTime, nil, time.Time{}, false)
 	var decision *metav1.Condition
-	if tc.decisionStatus != "" || tc.mirrorDecisionMessage {
+	if tc.decisionStatus != "" || tc.mirrorDecisionMessage || len(tc.decisionMessageContains) > 0 {
 		decision = meta.FindStatusCondition(scaler.Status.Conditions, autoscalingv1alpha1.ConditionDecisionAvailable)
 		Expect(decision).NotTo(BeNil())
 	}
@@ -876,6 +916,12 @@ func runCustomProviderReconcile(tc customReconcileCase) {
 		if tc.decisionMessageNonEmpty {
 			Expect(decision.Message).NotTo(BeEmpty())
 		}
+	}
+	for _, sub := range tc.decisionMessageContains {
+		if sub == "" {
+			Fail("decisionMessageContains entry is empty")
+		}
+		Expect(decision.Message).To(ContainSubstring(sub))
 	}
 	if tc.ready != nil {
 		assertCondition(scaler, autoscalingv1alpha1.ConditionReady, *tc.ready)

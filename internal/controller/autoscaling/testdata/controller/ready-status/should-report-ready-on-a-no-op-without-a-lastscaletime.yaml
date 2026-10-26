@@ -26,5 +26,12 @@
       "messageContains":
       - "replica count is at the step target"
       "observedGenerationCurrent": true
+    "decision":
+      "status": "True"
+      "reason": "MetricsAvailable"
+      "messageContains":
+      - "evaluated 1 of 1 metrics"
+      - "recommends 1 replicas"
+      "observedGenerationCurrent": true
     "lastScaleTime": "unset"
     "observedGenerationCurrent": true

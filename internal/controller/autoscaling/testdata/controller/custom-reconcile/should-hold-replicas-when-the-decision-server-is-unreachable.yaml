@@ -18,10 +18,14 @@
   "desired": 3
   "decisionStatus": "False"
   "decisionReason": "DecisionUnavailable"
-  "decisionMessageNonEmpty": true
+  "decisionMessageContains":
+  - "custom provider returned no decision"
+  - "decision server"
   "ready":
     "status": "False"
     "reason": "DecisionUnavailable"
+    "messageContains":
+    - "custom provider returned no decision"
     "observedGenerationCurrent": true
   "mirrorDecisionMessage": true
   "lastScaleTime": "unset"

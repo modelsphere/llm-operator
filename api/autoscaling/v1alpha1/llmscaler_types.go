@@ -50,33 +50,61 @@ const DefaultDeferTimeoutSeconds int32 = 600
 
 // Condition types and reasons on LLMScalerStatus.Conditions.
 const (
-	// ConditionDecisionAvailable is set under the Custom provider: true when the
-	// last sync got a decision, false (with the error as message) when it held
-	// replicas instead.
+	// ConditionDecisionAvailable means this sync has a usable scaling signal.
+	// It is the HPA ScalingActive equivalent. Both providers set it on every
+	// sync that reaches a recommendation, so switching metricProvider
+	// overwrites it.
+	//
+	// Custom, decision read: True / DecisionReceived, "decision server
+	// recommends N replicas". Custom, no decision: False /
+	// DecisionUnavailable, "custom provider returned no decision: <err>".
+	// Custom with spec.customProvider nil: False / InvalidSpec,
+	// "spec.customProvider is not set".
+	//
+	// Prometheus, at least one metric evaluated: True / MetricsAvailable,
+	// "evaluated K of M metrics; recommends N replicas". N is the raw maximum
+	// before clamping and stabilization. Prometheus, nothing evaluated: False
+	// / DecisionUnavailable. The message names prometheus and the last error,
+	// or says that no metric could be evaluated when there is no error.
+	//
+	// A sync that stops before the recommendation (targetRef.apiVersion does
+	// not parse, or the target cannot be read) does not touch this condition.
+	// A target write failure keeps the value computed earlier in that sync.
 	ConditionDecisionAvailable = "DecisionAvailable"
 
 	// ConditionAbleToScale reports whether this sync could scale the target.
-	// True is the normal state. It stays True while a rollout or settle guard
-	// holds the write, and when the deferral timeout forces that write. The
-	// reason then names the guard (RolloutInProgress, ScaleDownSettling) or
-	// DeferralTimedOut, or Synced when no guard holds. False means this sync
-	// could not scale: targetRef.apiVersion does not parse (InvalidSpec), the
-	// target could not be read (TargetNotFound, TargetUnreadable), or the
-	// replica write failed (TargetWriteFailed).
+	// It is the HPA AbleToScale equivalent. True is the normal state. It stays
+	// True while a rollout or settle guard holds the write, and when the
+	// deferral timeout forces that write. The reason then names the guard
+	// (RolloutInProgress, ScaleDownSettling) or DeferralTimedOut, or Synced
+	// when no guard holds. False means this sync could not scale:
+	// targetRef.apiVersion does not parse (InvalidSpec), the target could not
+	// be read (TargetNotFound, TargetUnreadable), or the replica write failed
+	// (TargetWriteFailed).
 	ConditionAbleToScale = "AbleToScale"
 
-	// ConditionReady is the summary of the last sync, and the condition to
-	// watch. It is True when the sync completed cleanly: the controller wrote
-	// spec.replicas, the replica count was already at the step target, or a
-	// guard is holding the write. It is False when the sync could not do its
-	// job. When AbleToScale is False, Ready is False with AbleToScale's
-	// reason. A Custom scaler with no customProvider, a missing decision, and
-	// an unevaluable metric are False on Ready while AbleToScale still
-	// describes the scale decision. A guard hold is not a failure: read Ready
-	// for overall health and AbleToScale for why a write is or is not happening.
+	// ConditionReady is the summary of the last sync (the KEDA Ready
+	// equivalent), and the condition to watch. Precedence:
+	//  1. AbleToScale False: Ready is False with that reason and message.
+	//  2. DecisionAvailable False this sync: Ready is False with that reason
+	//     and message (InvalidSpec, DecisionUnavailable).
+	//  3. Otherwise True / Synced. A guard hold is not a failure; the message
+	//     points at AbleToScale.
+	//
+	// Target-error paths do not evaluate DecisionAvailable, and AbleToScale is
+	// False there, so a stale DecisionAvailable cannot decide Ready. A Custom
+	// scaler with no customProvider whose target is also missing is read
+	// first, so Ready is TargetNotFound.
 	ConditionReady = "Ready"
 
-	ReasonDecisionReceived    = "DecisionReceived"
+	// ReasonDecisionReceived means the Custom provider read a decision this
+	// sync. DecisionAvailable is True with this reason.
+	ReasonDecisionReceived = "DecisionReceived"
+	// ReasonDecisionUnavailable means this sync has no usable scaling signal,
+	// so the replica count was held. Both providers use it: Custom when the
+	// decision server returned nothing, Prometheus when no metric could be
+	// evaluated. DecisionAvailable and Ready are False with this reason.
+	// AbleToScale still describes the scale decision.
 	ReasonDecisionUnavailable = "DecisionUnavailable"
 
 	// ReasonRolloutInProgress means a Deployment rollout is in progress, so the
@@ -100,25 +128,30 @@ const (
 	// when no guard holds: a normal write, or a no-op with no deferral
 	// running. deferredSince is cleared in that case.
 	ReasonSynced = "Synced"
-	// ReasonMetricsUnavailable means the Prometheus provider could not evaluate
-	// any metric this sync, so the replica count was held. Ready is False with
-	// this reason. AbleToScale still describes the scale decision.
-	ReasonMetricsUnavailable = "MetricsUnavailable"
+	// ReasonMetricsAvailable means the Prometheus provider evaluated at least
+	// one metric this sync. DecisionAvailable is True with this reason. The
+	// replica count in the message is the raw maximum across those metrics,
+	// before clamping to min/max and before scale-down stabilization.
+	ReasonMetricsAvailable = "MetricsAvailable"
 	// ReasonInvalidSpec means the scaler cannot be reconciled as written.
-	// On AbleToScale it means targetRef.apiVersion does not parse. On Ready it
-	// is that, or metricProvider is Custom and customProvider is not set (in
-	// which case AbleToScale still describes the scale decision).
+	// On AbleToScale it means targetRef.apiVersion does not parse, and the
+	// sync stops. On DecisionAvailable and Ready it is also set when
+	// metricProvider is Custom and customProvider is not set; AbleToScale
+	// still describes the scale decision in that case. A missing target is
+	// reported first, so Ready is TargetNotFound when both apply.
 	ReasonInvalidSpec = "InvalidSpec"
 	// ReasonTargetNotFound means getting the scale target returned NotFound.
-	// AbleToScale and Ready are both False. deferredSince and the replica
-	// counts are left as they are.
+	// AbleToScale and Ready are both False. DecisionAvailable, deferredSince,
+	// and the replica counts are left as they are.
 	ReasonTargetNotFound = "TargetNotFound"
 	// ReasonTargetUnreadable means getting the scale target failed for a
 	// reason other than NotFound. AbleToScale and Ready are both False.
-	// deferredSince and the replica counts are left as they are.
+	// DecisionAvailable, deferredSince, and the replica counts are left as
+	// they are.
 	ReasonTargetUnreadable = "TargetUnreadable"
 	// ReasonTargetWriteFailed means setting or updating spec.replicas on the
-	// scale target failed. AbleToScale and Ready are both False. deferredSince
+	// scale target failed. AbleToScale and Ready are both False. The
+	// DecisionAvailable computed earlier in that sync is kept. deferredSince
 	// and the replica counts are left as they are.
 	ReasonTargetWriteFailed = "TargetWriteFailed"
 )

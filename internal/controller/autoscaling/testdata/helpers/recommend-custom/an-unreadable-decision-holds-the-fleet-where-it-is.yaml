@@ -12,3 +12,4 @@
 "expected":
   "replicas": 8
   "holdReason": "DecisionUnavailable"
+  "holdMessageContains": "custom provider returned no decision"
