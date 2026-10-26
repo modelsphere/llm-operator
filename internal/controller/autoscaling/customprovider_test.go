@@ -238,7 +238,9 @@ type recommendCustomFile struct {
 		AbsentCustomProvider bool   `json:"absentCustomProvider"`
 	} `json:"inputs"`
 	Expected struct {
-		Replicas int32 `json:"replicas"`
+		Replicas            int32  `json:"replicas"`
+		HoldReason          string `json:"holdReason"`
+		HoldMessageContains string `json:"holdMessageContains"`
 	} `json:"expected"`
 }
 
@@ -277,9 +279,15 @@ func TestRecommendReplicasCustomProvider(t *testing.T) {
 		key := types.NamespacedName{Namespace: "ns", Name: "s"}
 		// specReplicas is what "hold where it is" means. The files set it to the
 		// same figure as readyReplicas so a hold is not confused with a clamp.
-		got := r.recommendReplicas(context.Background(), scaler, key, in.ReadyReplicas, in.SpecReplicas)
+		got, hold := r.recommendReplicas(context.Background(), scaler, key, in.ReadyReplicas, in.SpecReplicas)
 		if got != tc.Expected.Replicas {
 			t.Fatalf("recommendReplicas = %d, want %d", got, tc.Expected.Replicas)
+		}
+		if tc.Expected.HoldReason != "" && hold.reason != tc.Expected.HoldReason {
+			t.Errorf("hold reason = %q, want %q", hold.reason, tc.Expected.HoldReason)
+		}
+		if sub := tc.Expected.HoldMessageContains; sub != "" && !strings.Contains(hold.message, sub) {
+			t.Errorf("hold message = %q, want it to contain %q", hold.message, sub)
 		}
 	})
 }
@@ -335,7 +343,7 @@ func TestRecommendReplicasDefaultProviderIsPrometheus(t *testing.T) {
 
 		r := &LLMScalerReconciler{}
 		key := types.NamespacedName{Namespace: "ns", Name: "s"}
-		got := r.recommendReplicas(context.Background(), scaler, key, tc.Inputs.ReadyReplicas, tc.Inputs.SpecReplicas)
+		got, _ := r.recommendReplicas(context.Background(), scaler, key, tc.Inputs.ReadyReplicas, tc.Inputs.SpecReplicas)
 		if got != tc.Expected.Replicas {
 			t.Errorf("recommendReplicas = %d, want %d", got, tc.Expected.Replicas)
 		}

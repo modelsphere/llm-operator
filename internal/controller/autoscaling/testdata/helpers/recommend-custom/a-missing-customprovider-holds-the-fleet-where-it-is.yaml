@@ -13,3 +13,5 @@
   "pinAPIVersion": true
 "expected":
   "replicas": 8
+  "holdReason": "InvalidSpec"
+  "holdMessageContains": "spec.customProvider is not set"

@@ -61,6 +61,14 @@ const (
 	// after the timeout) or when nothing is deferred.
 	ConditionScalingDeferred = "ScalingDeferred"
 
+	// ConditionReady is the summary of the last sync, and the condition to
+	// watch. It is True when the sync completed cleanly: the controller wrote
+	// spec.replicas, the replica count was already at the step target, or a
+	// guard is holding the write. It is False when the sync could not do its
+	// job. ScalingDeferred False with NotDeferred is healthy, not a failure;
+	// the detail of a hold stays on ScalingDeferred.
+	ConditionReady = "Ready"
+
 	ReasonDecisionReceived    = "DecisionReceived"
 	ReasonDecisionUnavailable = "DecisionUnavailable"
 
@@ -80,6 +88,27 @@ const (
 	// start a deferral, and a no-op while a guard still matches is not this
 	// reason when deferredSince is already set.
 	ReasonNotDeferred = "NotDeferred"
+
+	// ReasonSynced means the last sync completed cleanly. It is the reason on
+	// ConditionReady when the controller wrote, had nothing to write, or a
+	// guard is holding the write. The message says which, and a deferral
+	// points at ScalingDeferred for the detail.
+	ReasonSynced = "Synced"
+	// ReasonMetricsUnavailable means the Prometheus provider could not evaluate
+	// any metric this sync, so the replica count was held.
+	ReasonMetricsUnavailable = "MetricsUnavailable"
+	// ReasonInvalidSpec means the scaler cannot be reconciled as written:
+	// targetRef.apiVersion does not parse, or metricProvider is Custom and
+	// customProvider is not set.
+	ReasonInvalidSpec = "InvalidSpec"
+	// ReasonTargetNotFound means getting the scale target returned NotFound.
+	ReasonTargetNotFound = "TargetNotFound"
+	// ReasonTargetUnreadable means getting the scale target failed for a
+	// reason other than NotFound.
+	ReasonTargetUnreadable = "TargetUnreadable"
+	// ReasonTargetWriteFailed means setting or updating spec.replicas on the
+	// scale target failed.
+	ReasonTargetWriteFailed = "TargetWriteFailed"
 )
 
 // CustomProviderSpec configures the "Custom" metric provider: an external
@@ -322,6 +351,19 @@ type LLMScalerStatus struct {
 	// +optional
 	DeferredSince *metav1.Time `json:"deferredSince,omitempty"`
 
+	// observedGeneration is the most recent generation observed by the
+	// controller. It is set to metadata.generation on every status write.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// lastScaleTime is when the controller last successfully wrote
+	// spec.replicas on the target, taken from the reconciler clock. It is set
+	// on a normal write and on a write forced after the deferral timeout, and
+	// left unchanged on every other sync: a no-op, a deferral, pacing, or an
+	// error.
+	// +optional
+	LastScaleTime *metav1.Time `json:"lastScaleTime,omitempty"`
+
 	// conditions represent the current state of the LLMScaler resource.
 	// +listType=map
 	// +listMapKey=type
@@ -335,6 +377,7 @@ type LLMScalerStatus struct {
 // +kubebuilder:printcolumn:name="MaxReplicas",type="integer",JSONPath=".spec.maxReplicas",description="The upper limit for the number of replicas"
 // +kubebuilder:printcolumn:name="CurrentReplicas",type="integer",JSONPath=".status.currentReplicas",description="The current number of replicas"
 // +kubebuilder:printcolumn:name="DesiredReplicas",type="integer",JSONPath=".status.desiredReplicas",description="The desired number of replicas"
+// +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type==\"Ready\")].status",description="Whether the last sync completed cleanly"
 // +kubebuilder:printcolumn:name="Deferred",type="string",JSONPath=".status.conditions[?(@.type==\"ScalingDeferred\")].status",description="Whether a scale action is currently deferred"
 
 // LLMScaler is the Schema for the llmscalers API

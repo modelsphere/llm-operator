@@ -31,6 +31,10 @@ spec:
       jsonPath: .status.desiredReplicas
       name: DesiredReplicas
       type: integer
+    - description: Whether the last sync completed cleanly
+      jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
     - description: Whether a scale action is currently deferred
       jsonPath: .status.conditions[?(@.type=="ScalingDeferred")].status
       name: Deferred
@@ -390,6 +394,21 @@ spec:
                 description: desiredReplicas is the desired number of replicas of
                   pods managed by this autoscaler
                 format: int32
+                type: integer
+              lastScaleTime:
+                description: |-
+                  lastScaleTime is when the controller last successfully wrote
+                  spec.replicas on the target, taken from the reconciler clock. It is set
+                  on a normal write and on a write forced after the deferral timeout, and
+                  left unchanged on every other sync: a no-op, a deferral, pacing, or an
+                  error.
+                format: date-time
+                type: string
+              observedGeneration:
+                description: |-
+                  observedGeneration is the most recent generation observed by the
+                  controller. It is set to metadata.generation on every status write.
+                format: int64
                 type: integer
             type: object
         required:

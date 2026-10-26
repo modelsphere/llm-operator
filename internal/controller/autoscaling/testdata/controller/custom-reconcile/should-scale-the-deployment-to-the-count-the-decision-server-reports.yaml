@@ -10,3 +10,11 @@
   "replicas": 4
   "desired": 4
   "decisionStatus": "True"
+  "ready":
+    "status": "True"
+    "reason": "Synced"
+    "messageContains":
+    - "scaled 1 -> 4"
+    "observedGenerationCurrent": true
+  "lastScaleTime": "set"
+  "observedGenerationCurrent": true

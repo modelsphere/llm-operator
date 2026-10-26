@@ -1,0 +1,28 @@
+# ceil(1 * 0.85/0.5) = ceil(1.7) = 2. The mock sample is 0.85 and the target is 0.5.
+"name": "should-report-ready-and-lastscaletime-when-a-scale-write-succeeds"
+"description": "should report Ready and lastScaleTime when a scale write succeeds"
+"inputs":
+  "steps":
+  - "by": "scaling the deployment"
+    "at": "0s"
+"expected":
+  "steps":
+  - "replicas": 2
+    "desired": 2
+    "applied": 2
+    "current": 1
+    "requeueAfter": "15s"
+    "condition":
+      "status": "False"
+      "reason": "NotDeferred"
+      "messageContains":
+      - "scaled 1 -> 2"
+      "observedGenerationCurrent": true
+    "ready":
+      "status": "True"
+      "reason": "Synced"
+      "messageContains":
+      - "scaled 1 -> 2"
+      "observedGenerationCurrent": true
+    "lastScaleTime": "set"
+    "observedGenerationCurrent": true

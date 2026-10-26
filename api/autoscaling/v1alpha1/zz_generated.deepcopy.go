@@ -146,6 +146,10 @@ func (in *LLMScalerStatus) DeepCopyInto(out *LLMScalerStatus) {
 		in, out := &in.DeferredSince, &out.DeferredSince
 		*out = (*in).DeepCopy()
 	}
+	if in.LastScaleTime != nil {
+		in, out := &in.LastScaleTime, &out.LastScaleTime
+		*out = (*in).DeepCopy()
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))

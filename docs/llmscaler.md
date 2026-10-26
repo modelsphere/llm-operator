@@ -80,22 +80,39 @@ Only read when `metricProvider: Custom`.
 | `desiredReplicas` | int32 | Last recommendation after clamping to min/max and scale-down stabilization, but **before** the `maxStepReplicas` cap. While a step cap is walking the fleet down it therefore reports the destination, not the replica count just written. |
 | `appliedReplicas` | int32 | The target's `spec.replicas` after this sync: the value just written, or the unchanged value when the sync deferred or had nothing to do. This is the replica count left on the target, separate from the `desiredReplicas` recommendation. |
 | `deferredSince` | metav1.Time | When the current deferral started. Set on the first sync that holds a scale action back. Kept across guard reason changes, no-op syncs while a guard still matches, and forced writes. Cleared only when a sync finds no guard matching (a normal write, or a no-op with no guard). A no-op does not start it. Stored in status so it survives an operator restart. |
-| `conditions` | []metav1.Condition | `DecisionAvailable` under the Custom provider (see [Custom metric provider](#custom-metric-provider)) and `ScalingDeferred` (see below). |
+| `observedGeneration` | int64 | `metadata.generation` at the last status write. |
+| `lastScaleTime` | metav1.Time | When the controller last successfully wrote `spec.replicas` on the target. Set on a normal write and on a write forced after the deferral timeout. Left unchanged on a no-op, a deferral, pacing, or an error. |
+| `conditions` | []metav1.Condition | `Ready`, `DecisionAvailable`, and `ScalingDeferred`. See [Conditions](#conditions). |
 
-`kubectl get llmscalers` prints `MinReplicas`, `MaxReplicas`, `CurrentReplicas`, `DesiredReplicas`, `Deferred` (the `ScalingDeferred` condition status).
+`kubectl get llmscalers` prints `MinReplicas`, `MaxReplicas`, `CurrentReplicas`, `DesiredReplicas`, `Ready` (the `Ready` condition status), `Deferred` (the `ScalingDeferred` condition status).
 
-#### `ScalingDeferred` condition
+### Conditions
 
-Set on every sync that gets as far as a scale decision. It describes that sync.
+Read `Ready` for overall health. `DecisionAvailable` and `ScalingDeferred` carry detail. Polarity differs: `ScalingDeferred=True` is the held case, and `False` (`NotDeferred`) is the normal state, not a failure. Every condition carries the `metadata.generation` it was computed from as its `observedGeneration`. A sync that stops early updates `Ready` only and leaves the other two as they were.
+
+| Type | Status | Reason | Set when |
+| --- | --- | --- | --- |
+| `Ready` | `True` | `Synced` | The sync reached a scale decision and none of the failures below applies. That covers a write (`scaled 3 -> 5`), a no-op (`replica count is at the step target`), and a guard holding the write, paced forced writes included (`scale action deferred: <reason>; see ScalingDeferred`). |
+| `Ready` | `False` | `InvalidSpec` | `targetRef.apiVersion` does not parse: the sync stops, and only `Ready` and `observedGeneration` are written. Also set when `metricProvider` is `Custom` with no `customProvider` (the replica count is held). |
+| `Ready` | `False` | `TargetNotFound` | Getting the target returned NotFound. The sync stops. Only `Ready` and `observedGeneration` are written, and the sync is retried after `retryPeriodSeconds`. |
+| `Ready` | `False` | `TargetUnreadable` | Getting the target failed for another reason. Handled like `TargetNotFound`. |
+| `Ready` | `False` | `TargetWriteFailed` | Writing `spec.replicas` on the target failed. Only `Ready` and `observedGeneration` are written (best effort). The error is returned, so the sync is retried with backoff. |
+| `Ready` | `False` | `DecisionUnavailable` | Custom provider, no decision this sync. Same message as `DecisionAvailable`. The replica count is held. |
+| `Ready` | `False` | `MetricsUnavailable` | Prometheus provider, and no metric could be evaluated (query error, no data, NaN/Inf, or an invalid target). The replica count is held. The message includes the last error. |
+| `DecisionAvailable` | `True` | `DecisionReceived` | Custom provider: a decision was read this sync. Message: `decision server recommends N replicas`. |
+| `DecisionAvailable` | `False` | `DecisionUnavailable` | Custom provider: the request failed or the reply could not be used (see [Custom metric provider](#custom-metric-provider)). The error is the message. |
+| `ScalingDeferred` | `True` | `RolloutInProgress` | A `Deployment` target is mid-rollout: `observedGeneration < generation`, `updatedReplicas < spec.replicas`, or `replicas > updatedReplicas`. Holds scale-up, scale-down, and a no-op while a deferral is running. Checked first. |
+| `ScalingDeferred` | `True` | `ScaleDownSettling` | A scale-down while `readyReplicas != spec.replicas`, or, when the terminating check is on (off by default), `terminatingReplicas > 0`. |
+| `ScalingDeferred` | `False` | `DeferralTimedOut` | A guard still matched and `deferTimeoutSeconds` has elapsed since `deferredSince`, so the held write was applied anyway. `deferredSince` is kept. |
+| `ScalingDeferred` | `False` | `NotDeferred` | No guard matched and the sync wrote (`scaled X -> Y`), or the sync was a no-op with no deferral running. `deferredSince` is cleared. |
+
+- `Ready` precedence when several apply: `InvalidSpec`, then `TargetNotFound`/`TargetUnreadable`, then `TargetWriteFailed`, then `DecisionUnavailable`/`MetricsUnavailable`, then `Synced`. A held replica count from a missing decision or metric outranks a clean write or deferral.
+- `DecisionAvailable` is set only under the Custom provider with `customProvider` present. It is never set under Prometheus, and it is not removed if the provider is switched away from Custom.
+- `ScalingDeferred` is set on every sync that reaches a scale decision. Syncs that stop at the target read or fail the target write leave it unchanged.
+
+#### `ScalingDeferred` details
 
 A no-op while a guard still matches leaves `deferredSince` unchanged. If it is set, the condition stays `True` with that guard's reason and a message that nothing needs writing this sync, the guard is still active, and the deferral clock keeps running. If it is nil, the condition is `False`/`NotDeferred`: a no-op does not start a deferral.
-
-| Status | Reason | Meaning |
-| --- | --- | --- |
-| `True` | `RolloutInProgress` | A Deployment rollout is in progress; the scale action is held in either direction. |
-| `True` | `ScaleDownSettling` | A scale-down is waiting for `readyReplicas` to equal `spec.replicas`. |
-| `False` | `DeferralTimedOut` | The deferral reached `deferTimeoutSeconds` and the held write was applied anyway. `deferredSince` stays set when the guard still matches. |
-| `False` | `NotDeferred` | No guard matches: this sync wrote, or the target was already at the step target. |
 
 When the deadline has passed but a forced write already happened within the last sync period, the condition is `True` with the current guard reason and the message notes that the forced write is paced to one per sync period.
 
@@ -168,7 +185,7 @@ Only `decisions[].replicas.active` is read; every other field either identifies 
 - **`apiVersion` selects the schema.** The reply says how to read itself, and only `llmscaling.inference.x-k8s.io/v1alpha1` is understood; anything else is refused rather than parsed hopefully, since a later schema is free to reuse `replicas` for something that is not an absolute count.
 - **The reply is matched, not trusted.** `serviceId` is sent as a query parameter *and* checked against `decisions[].serviceId`, because what comes back is the server's choice — a decision for a service this scaler did not ask about must not be able to drive it. Exactly one decision must match; **more than one is an error**, the same rule (and the same reasoning) as a multi-series PromQL result. Set `customProvider.namespace` if the server reports the same `serviceId` in several namespaces.
 - **A failure holds the fleet, it never reads as zero.** A server that is down, a non-200, an unknown `apiVersion`, no matching decision, or a decision with no `replicas.active` all skip that sync and leave `spec.replicas` where it is — mirroring how an unevaluable PromQL query is handled.
-- **The outcome is on the status, not in the error log.** Each sync sets the `DecisionAvailable` condition: `True` (`DecisionReceived`) when a decision arrived, `False` (`DecisionUnavailable`) with the error as its message when replicas were held. Check it with `kubectl get llmscaler <name> -o jsonpath='{.status.conditions}'`.
+- **The outcome is on the status, not in the error log.** Each sync sets the `DecisionAvailable` condition: `True` (`DecisionReceived`) when a decision arrived, `False` (`DecisionUnavailable`) with the error as its message when replicas were held. `Ready` is `False` with the same reason and message. Check it with `kubectl get llmscaler <name> -o jsonpath='{.status.conditions}'`.
 - **`scaleDown.deletionCostQuery` is ignored** under this provider: it is PromQL and `serverAddress` is now a decision server, so victim selection falls back to the newest-pod-first heuristic. The controller logs when it skips it.
 
 ```yaml

@@ -1,0 +1,57 @@
+# The first sync defers a scale-up (wanted 2) while the deployment rolls out.
+# Deleting the target must record Ready without clearing that deferral or the
+# replica counts already written.
+"name": "should-report-target-not-found-and-leave-the-deferral-untouched"
+"description": "should report TargetNotFound and leave the deferral untouched"
+"inputs":
+  "rollout": true
+  "steps":
+  - "by": "deferring the scale-up and stamping deferredSince"
+    "at": "0s"
+  - "by": "deleting the target and reconciling again"
+    "at": "10s"
+    "deleteDeploy": true
+"expected":
+  "steps":
+  - "replicas": 1
+    "desired": 2
+    "applied": 1
+    "current": 1
+    "deferredSince": "0s"
+    "requeueAfter": "15s"
+    "condition":
+      "status": "True"
+      "reason": "RolloutInProgress"
+      "messageContains":
+      - "holding 1 replicas (wanted 2)"
+      - "Deployment rollout in progress"
+      - "will apply after 600s"
+      "observedGenerationCurrent": true
+    "ready":
+      "status": "True"
+      "reason": "Synced"
+      "messageContains":
+      - "scale action deferred: RolloutInProgress; see ScalingDeferred"
+      "observedGenerationCurrent": true
+    "lastScaleTime": "unset"
+    "observedGenerationCurrent": true
+  - "desired": 2
+    "applied": 1
+    "current": 1
+    "deferredSince": "0s"
+    "requeueAfter": "10s"
+    "condition":
+      "status": "True"
+      "reason": "RolloutInProgress"
+      "messageContains":
+      - "holding 1 replicas (wanted 2)"
+      - "Deployment rollout in progress"
+      - "will apply after 600s"
+    "ready":
+      "status": "False"
+      "reason": "TargetNotFound"
+      "messageContains":
+      - "not found"
+      "observedGenerationCurrent": true
+    "lastScaleTime": "unset"
+    "observedGenerationCurrent": true

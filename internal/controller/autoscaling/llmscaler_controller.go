@@ -138,6 +138,8 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	gv, err := schema.ParseGroupVersion(targetRef.APIVersion)
 	if err != nil {
 		logger.Error(err, "invalid apiVersion in targetRef")
+		r.recordReady(ctx, &scaler, metav1.ConditionFalse, autoscalingv1alpha1.ReasonInvalidSpec,
+			fmt.Sprintf("targetRef.apiVersion %q does not parse: %s", targetRef.APIVersion, err.Error()))
 		return ctrl.Result{}, nil // Stop reconciling if spec is invalid
 	}
 
@@ -159,9 +161,12 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	if err != nil {
 		logger.Error(err, "unable to fetch target resource", "kind", targetRef.Kind, "name", targetRef.Name)
-		// Requeue since the target might be created later. deferredSince and
-		// ScalingDeferred are left as they are, so the deadline carries over
-		// once the target is readable again.
+		// Requeue since the target might be created later. deferredSince,
+		// ScalingDeferred, and the replica counts are left as they are, so the
+		// deadline carries over once the target is readable again. Ready
+		// records why this sync could not read the target.
+		reason, msg := targetReadFailure(err, targetRef.Kind, targetRef.Name)
+		r.recordReady(ctx, &scaler, metav1.ConditionFalse, reason, msg)
 		return ctrl.Result{RequeueAfter: retryPeriod}, nil
 	}
 
@@ -188,7 +193,7 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// 3. Compute the recommendation: metrics, clamped to min/max, damped on the
 	// way down by the stabilization window. This is what we want, independent of
 	// how fast we are allowed to get there.
-	recommendedReplicas := r.recommendReplicas(ctx, &scaler, req.NamespacedName, specReplicas, metricReady)
+	recommendedReplicas, hold := r.recommendReplicas(ctx, &scaler, req.NamespacedName, specReplicas, metricReady)
 
 	// 4. Execute Scale Action, rate-limited by maxStepReplicas. The cap belongs
 	// here rather than in the recommendation: it governs how far a single write
@@ -204,8 +209,8 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// sync that holds a write and kept across guard changes, no-ops while a
 	// guard still matches, and forced writes. It is cleared only when no guard
 	// matches. It lives in status, so the deadline survives an operator restart.
-	// applied is the target's spec.replicas after this sync; a failed target
-	// update returns before the status write.
+	// applied is the target's spec.replicas after this sync. A failed target
+	// update records Ready and returns before replica counts are written.
 	now := r.now()
 	timeout := deferTimeout(&scaler)
 	deferral := evaluateGuards(state, ScaleIntent{From: state.Spec, To: targetReplicas})
@@ -217,6 +222,7 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	paceRemaining := r.forcedWriteRemaining(req.NamespacedName, syncPeriod, now)
 	requeueAfter := syncPeriod
 
+	var syncedMsg string
 	switch {
 	case noop && (!guarded || scaler.Status.DeferredSince == nil):
 		// Nothing is being held back. A guard that matches on a no-op does not
@@ -224,6 +230,7 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		r.endDeferral(req.NamespacedName, &scaler)
 		setScalingDeferredCondition(&scaler, metav1.ConditionFalse, autoscalingv1alpha1.ReasonNotDeferred,
 			"replica count is already at the step target")
+		syncedMsg = "replica count is at the step target"
 	case noop:
 		// A guard still matches and the clock is already running. There is
 		// nothing to write, so deferredSince stays and this sync is not holding
@@ -231,11 +238,13 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		logger.Info("No scale write this sync; deferral clock still running", "reason", deferral.message, "deferredSince", scaler.Status.DeferredSince.Time)
 		setScalingDeferredCondition(&scaler, metav1.ConditionTrue, deferral.reason,
 			scalingDeferredNoopMessage(deferral.message, scaler.Status.DeferredSince.Time, timeout))
+		syncedMsg = readyDeferredMessage(deferral.reason)
 	case guarded && !pastDeferTimeout(scaler.Status.DeferredSince, timeout, now):
 		r.holdScaleDeferred(&scaler, deferral, int32(specReplicas), targetReplicas, timeout, now)
 		logger.Info("Deferring scaling", "reason", deferral.message, "current", specReplicas, "ready", readyReplicas, "target", targetReplicas)
 		until := scaler.Status.DeferredSince.Time.Add(timeout).Sub(now)
 		requeueAfter = deferralRequeueAfter(syncPeriod, true, timeout, until, 0)
+		syncedMsg = readyDeferredMessage(deferral.reason)
 	case guarded && paceRemaining > 0:
 		// Deadline passed, but this process already forced a write within the
 		// last sync period. See lastForcedWrite.
@@ -246,21 +255,28 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 		setScalingDeferredCondition(&scaler, metav1.ConditionTrue, deferral.reason, msg)
 		requeueAfter = deferralRequeueAfter(syncPeriod, true, timeout, 0, paceRemaining)
+		syncedMsg = readyDeferredMessage(deferral.reason)
 	default:
 		// A normal write (no guard) or a forced write the pace allows. A failed
 		// target update returns before any deferral state is recorded.
 		wrote, err := r.writeScaleTarget(ctx, &scaler, targetObj, req.NamespacedName, int32(specReplicas), targetReplicas, guarded, deferral, timeout, now)
 		if err != nil {
+			r.recordTargetWriteFailure(ctx, &scaler, err, hold)
 			return ctrl.Result{}, err
 		}
 		applied = wrote
+		syncedMsg = scaledMessage(int32(specReplicas), targetReplicas)
 	}
 
 	// 4. Update Status. currentReplicas is the raw ready count, not the ratio
-	// baseline: a fully-unready fleet reports 0.
+	// baseline: a fully-unready fleet reports 0. A missing recommendation
+	// outranks an otherwise clean sync: Ready names that, and ScalingDeferred
+	// still describes the scale decision.
+	applyReady(&scaler, hold, syncedMsg)
 	scaler.Status.CurrentReplicas = int32(readyReplicas)
 	scaler.Status.DesiredReplicas = recommendedReplicas
 	scaler.Status.AppliedReplicas = applied
+	scaler.Status.ObservedGeneration = scaler.Generation
 	if err := r.Status().Update(ctx, &scaler); err != nil {
 		logger.Error(err, "failed to update scaler status")
 		return ctrl.Result{}, err
@@ -319,6 +335,9 @@ func (r *LLMScalerReconciler) writeScaleTarget(ctx context.Context, scaler *auto
 		logger.Error(err, "failed to update target resource")
 		return 0, err
 	}
+	// lastScaleTime moves only when the target accepted the new replica count.
+	stamped := metav1.NewTime(now)
+	scaler.Status.LastScaleTime = &stamped
 
 	// Pace the descent: pin the fleet at what we just wrote for one
 	// stabilization window, and drop the recommendations that were measured
@@ -339,7 +358,7 @@ func (r *LLMScalerReconciler) writeScaleTarget(ctx context.Context, scaler *auto
 	} else {
 		r.endDeferral(key, scaler)
 		setScalingDeferredCondition(scaler, metav1.ConditionFalse, autoscalingv1alpha1.ReasonNotDeferred,
-			fmt.Sprintf("scaled %d -> %d", specReplicas, targetReplicas))
+			scaledMessage(specReplicas, targetReplicas))
 	}
 	return targetReplicas, nil
 }
@@ -535,6 +554,79 @@ func setScalingDeferredCondition(scaler *autoscalingv1alpha1.LLMScaler, status m
 	})
 }
 
+func setReadyCondition(scaler *autoscalingv1alpha1.LLMScaler, status metav1.ConditionStatus, reason, msg string) {
+	meta.SetStatusCondition(&scaler.Status.Conditions, metav1.Condition{
+		Type:               autoscalingv1alpha1.ConditionReady,
+		Status:             status,
+		Reason:             reason,
+		Message:            msg,
+		ObservedGeneration: scaler.Generation,
+	})
+}
+
+// syncHold is why this sync has no usable recommendation. A zero reason means
+// a metric or a decision produced one. Precedence when several failures apply
+// is decided by the caller: InvalidSpec, then a target read or write failure,
+// then a missing signal, then Synced.
+type syncHold struct {
+	reason  string
+	message string
+}
+
+// readyDeferredMessage is the Ready summary while a guard holds the write.
+// The guard reason and the clock stay on ScalingDeferred.
+func readyDeferredMessage(reason string) string {
+	return fmt.Sprintf("scale action deferred: %s; see ScalingDeferred", reason)
+}
+
+// scaledMessage is the Ready and ScalingDeferred text for a normal write.
+func scaledMessage(from, to int32) string {
+	return fmt.Sprintf("scaled %d -> %d", from, to)
+}
+
+// applyReady sets Ready for a sync that reached a scale decision. A hold
+// (invalid spec, no decision, no metric) outranks an otherwise clean sync.
+func applyReady(scaler *autoscalingv1alpha1.LLMScaler, hold syncHold, syncedMsg string) {
+	if hold.reason != "" {
+		setReadyCondition(scaler, metav1.ConditionFalse, hold.reason, hold.message)
+		return
+	}
+	setReadyCondition(scaler, metav1.ConditionTrue, autoscalingv1alpha1.ReasonSynced, syncedMsg)
+}
+
+// targetReadFailure is the Ready reason for a target Get that failed.
+func targetReadFailure(err error, kind, name string) (string, string) {
+	if apierrors.IsNotFound(err) {
+		return autoscalingv1alpha1.ReasonTargetNotFound, fmt.Sprintf("target %s %q not found", kind, name)
+	}
+	return autoscalingv1alpha1.ReasonTargetUnreadable, fmt.Sprintf("could not get target %s %q: %s", kind, name, err.Error())
+}
+
+// recordReady sets Ready and observedGeneration, then writes status. Replica
+// counts, deferredSince, and ScalingDeferred are left as they stand. A
+// status-write error is logged; the caller keeps its original result.
+func (r *LLMScalerReconciler) recordReady(ctx context.Context, scaler *autoscalingv1alpha1.LLMScaler, status metav1.ConditionStatus, reason, msg string) {
+	logger := logf.FromContext(ctx)
+	setReadyCondition(scaler, status, reason, msg)
+	scaler.Status.ObservedGeneration = scaler.Generation
+	if err := r.Status().Update(ctx, scaler); err != nil {
+		logger.Error(err, "failed to update scaler status")
+	}
+}
+
+// recordTargetWriteFailure records Ready after spec.replicas could not be
+// written. InvalidSpec outranks the write failure; a missing metric or
+// decision does not. The status write is best-effort.
+func (r *LLMScalerReconciler) recordTargetWriteFailure(ctx context.Context, scaler *autoscalingv1alpha1.LLMScaler, writeErr error, hold syncHold) {
+	reason := autoscalingv1alpha1.ReasonTargetWriteFailed
+	msg := fmt.Sprintf("could not write spec.replicas: %s", writeErr.Error())
+	if hold.reason == autoscalingv1alpha1.ReasonInvalidSpec {
+		reason = hold.reason
+		msg = hold.message
+	}
+	r.recordReady(ctx, scaler, metav1.ConditionFalse, reason, msg)
+}
+
 func (r *LLMScalerReconciler) event(obj client.Object, eventType, reason, msg string) {
 	if r.Recorder == nil {
 		return
@@ -584,7 +676,10 @@ func (r *LLMScalerReconciler) stabilizeDesired(key types.NamespacedName, desired
 // from per-replica measurements, Custom is handed the count outright. Both feed
 // the same clamping and damping below, so a scaler behaves identically once the
 // number exists.
-func (r *LLMScalerReconciler) recommendReplicas(ctx context.Context, scaler *autoscalingv1alpha1.LLMScaler, key types.NamespacedName, specReplicas, readyReplicas int64) int32 {
+//
+// hold says why there is no recommendation. It is zero when the count came
+// from a metric or a decision. The numeric result does not depend on it.
+func (r *LLMScalerReconciler) recommendReplicas(ctx context.Context, scaler *autoscalingv1alpha1.LLMScaler, key types.NamespacedName, specReplicas, readyReplicas int64) (int32, syncHold) {
 	logger := logf.FromContext(ctx)
 
 	// Use the metric recommendation when at least one metric was evaluated — it
@@ -593,11 +688,15 @@ func (r *LLMScalerReconciler) recommendReplicas(ctx context.Context, scaler *aut
 	var (
 		maxDesiredReplicas int32
 		haveMetric         bool
+		hold               syncHold
 	)
 	if scaler.Spec.MetricProvider == autoscalingv1alpha1.MetricProviderCustom {
-		maxDesiredReplicas, haveMetric = r.desiredFromCustomProvider(ctx, scaler)
+		maxDesiredReplicas, haveMetric, hold = r.desiredFromCustomProvider(ctx, scaler)
 	} else {
-		maxDesiredReplicas, haveMetric = r.computeDesiredFromMetrics(ctx, scaler, readyReplicas)
+		maxDesiredReplicas, haveMetric, hold = r.computeDesiredFromMetrics(ctx, scaler, readyReplicas)
+	}
+	if haveMetric {
+		hold = syncHold{}
 	}
 
 	desiredReplicas := int32(specReplicas)
@@ -624,7 +723,7 @@ func (r *LLMScalerReconciler) recommendReplicas(ctx context.Context, scaler *aut
 		desiredReplicas = stabilized
 	}
 
-	return desiredReplicas
+	return desiredReplicas, hold
 }
 
 // scaleGuard limits a single scale-down write to maxStep replicas below
@@ -685,16 +784,19 @@ func (r *LLMScalerReconciler) forgetRecommendations(key types.NamespacedName) {
 }
 
 // computeDesiredFromMetrics evaluates each metric's PromQL query and returns the
-// maximum desired replica count (HPA-style: ceil(readyReplicas * value/target))
-// and whether any metric was successfully evaluated.
-func (r *LLMScalerReconciler) computeDesiredFromMetrics(ctx context.Context, scaler *autoscalingv1alpha1.LLMScaler, readyReplicas int64) (int32, bool) {
+// maximum desired replica count (HPA-style: ceil(readyReplicas * value/target)),
+// whether any metric was successfully evaluated, and why none was when that is
+// the case.
+func (r *LLMScalerReconciler) computeDesiredFromMetrics(ctx context.Context, scaler *autoscalingv1alpha1.LLMScaler, readyReplicas int64) (int32, bool, syncHold) {
 	logger := logf.FromContext(ctx)
 	var maxDesired int32
 	haveMetric := false
+	var lastErr error
 
 	for _, metric := range scaler.Spec.Metrics {
 		currentValue, err := queryPrometheusScalar(scaler.Spec.ServerAddress, metric.Query, scaler.Spec.ServerHeaders)
 		if err != nil {
+			lastErr = err
 			logger.Error(err, "failed to fetch metric", "name", metric.Name, "query", metric.Query)
 			continue
 		}
@@ -708,13 +810,15 @@ func (r *LLMScalerReconciler) computeDesiredFromMetrics(ctx context.Context, sca
 		// haveMetric: a NaN guardrail alongside a failing primary metric leaves
 		// maxDesired at 0, which clamps the whole fleet to minReplicas.
 		if math.IsNaN(currentValue) || math.IsInf(currentValue, 0) {
-			logger.Error(fmt.Errorf("query returned %v", currentValue), "ignoring non-finite metric value",
+			lastErr = fmt.Errorf("query returned %v", currentValue)
+			logger.Error(lastErr, "ignoring non-finite metric value",
 				"name", metric.Name, "query", metric.Query)
 			continue
 		}
 
 		targetValue, err := parseTargetValue(metric.Target)
 		if err != nil {
+			lastErr = err
 			logger.Error(err, "invalid target value", "target", metric.Target)
 			continue
 		}
@@ -737,7 +841,19 @@ func (r *LLMScalerReconciler) computeDesiredFromMetrics(ctx context.Context, sca
 			maxDesired = metricDesired
 		}
 	}
-	return maxDesired, haveMetric
+	if !haveMetric {
+		return maxDesired, false, metricsHold(lastErr)
+	}
+	return maxDesired, true, syncHold{}
+}
+
+// metricsHold is the Ready summary when no Prometheus metric could be evaluated.
+func metricsHold(lastErr error) syncHold {
+	msg := "no metric could be evaluated; holding replicas"
+	if lastErr != nil {
+		msg = fmt.Sprintf("%s: %s", msg, lastErr.Error())
+	}
+	return syncHold{reason: autoscalingv1alpha1.ReasonMetricsUnavailable, message: msg}
 }
 
 // desiredFromCustomProvider fetches the decision server's replica
@@ -752,8 +868,8 @@ func (r *LLMScalerReconciler) computeDesiredFromMetrics(ctx context.Context, sca
 // A failure returns false rather than 0, so a decision server that is down or
 // answering in a schema we don't know holds the fleet where it is instead of
 // collapsing it to minReplicas — the same rule the Prometheus path applies to a
-// query that cannot be evaluated.
-func (r *LLMScalerReconciler) desiredFromCustomProvider(ctx context.Context, scaler *autoscalingv1alpha1.LLMScaler) (int32, bool) {
+// query that cannot be evaluated. The hold says why, when the bool is false.
+func (r *LLMScalerReconciler) desiredFromCustomProvider(ctx context.Context, scaler *autoscalingv1alpha1.LLMScaler) (int32, bool, syncHold) {
 	logger := logf.FromContext(ctx)
 
 	provider := scaler.Spec.CustomProvider
@@ -762,7 +878,10 @@ func (r *LLMScalerReconciler) desiredFromCustomProvider(ctx context.Context, sca
 		// the cluster predates the validation rule.
 		logger.Error(fmt.Errorf("spec.customProvider is not set"),
 			"Could not query the custom metric provider", "metricProvider", scaler.Spec.MetricProvider)
-		return 0, false
+		return 0, false, syncHold{
+			reason:  autoscalingv1alpha1.ReasonInvalidSpec,
+			message: "spec.customProvider is not set",
+		}
 	}
 
 	replicas, err := queryDecisionReplicas(scaler.Spec.ServerAddress, provider.Path,
@@ -773,13 +892,16 @@ func (r *LLMScalerReconciler) desiredFromCustomProvider(ctx context.Context, sca
 		logger.Info("No decision from the custom metric provider; holding replicas",
 			"serverAddress", scaler.Spec.ServerAddress, "serviceId", provider.ServiceID, "error", err.Error())
 		setDecisionCondition(scaler, metav1.ConditionFalse, autoscalingv1alpha1.ReasonDecisionUnavailable, err.Error())
-		return 0, false
+		return 0, false, syncHold{
+			reason:  autoscalingv1alpha1.ReasonDecisionUnavailable,
+			message: err.Error(),
+		}
 	}
 
 	logger.Info("Custom provider decision", "serviceId", provider.ServiceID, "calculatedDesired", replicas)
 	setDecisionCondition(scaler, metav1.ConditionTrue, autoscalingv1alpha1.ReasonDecisionReceived,
 		fmt.Sprintf("decision server recommends %d replicas", replicas))
-	return replicas, true
+	return replicas, true, syncHold{}
 }
 
 func setDecisionCondition(scaler *autoscalingv1alpha1.LLMScaler, status metav1.ConditionStatus, reason, msg string) {

@@ -1,0 +1,48 @@
+# A normal write lands first. An apiVersion with more than one slash does not
+# parse, so the next sync records InvalidSpec and leaves the previous status
+# and the target replica count alone.
+"name": "should-report-invalid-spec-when-targetref-apiversion-does-not-parse"
+"description": "should report InvalidSpec when targetRef.apiVersion does not parse"
+"inputs":
+  "steps":
+  - "by": "scaling once so status is populated"
+    "at": "0s"
+  - "by": "setting an apiVersion that does not parse"
+    "at": "5s"
+    "apiVersion": "apps/v1/extra"
+"expected":
+  "steps":
+  - "replicas": 2
+    "desired": 2
+    "applied": 2
+    "current": 1
+    "condition":
+      "status": "False"
+      "reason": "NotDeferred"
+      "messageContains":
+      - "scaled 1 -> 2"
+    "ready":
+      "status": "True"
+      "reason": "Synced"
+      "messageContains":
+      - "scaled 1 -> 2"
+    "lastScaleTime": "set"
+    "observedGenerationCurrent": true
+  - "replicas": 2
+    "desired": 2
+    "applied": 2
+    "current": 1
+    "requeueAfter": "0s"
+    "condition":
+      "status": "False"
+      "reason": "NotDeferred"
+      "messageContains":
+      - "scaled 1 -> 2"
+    "ready":
+      "status": "False"
+      "reason": "InvalidSpec"
+      "messageContains":
+      - "apps/v1/extra"
+      "observedGenerationCurrent": true
+    "lastScaleTime": "unchanged"
+    "observedGenerationCurrent": true

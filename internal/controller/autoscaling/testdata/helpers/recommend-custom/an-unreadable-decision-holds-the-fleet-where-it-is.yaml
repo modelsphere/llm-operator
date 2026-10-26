@@ -11,3 +11,4 @@
   "apiVersion": "some.other.api/v1"
 "expected":
   "replicas": 8
+  "holdReason": "DecisionUnavailable"

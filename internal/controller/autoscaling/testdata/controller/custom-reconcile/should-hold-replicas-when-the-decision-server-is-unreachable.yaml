@@ -15,6 +15,14 @@
   "statusBy": "checking the failure is reported on the status"
 "expected":
   "replicas": 3
+  "desired": 3
   "decisionStatus": "False"
   "decisionReason": "DecisionUnavailable"
   "decisionMessageNonEmpty": true
+  "ready":
+    "status": "False"
+    "reason": "DecisionUnavailable"
+    "observedGenerationCurrent": true
+  "mirrorDecisionMessage": true
+  "lastScaleTime": "unset"
+  "observedGenerationCurrent": true

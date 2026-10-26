@@ -1,0 +1,52 @@
+# First sync: ceil(1 * 0.85/0.5) = 2, a normal write. Second sync raises the
+# metric to 2.5 while the new spec is still unobserved, so ceil(1 * 2.5/0.5) = 5
+# is held by the rollout guard. lastScaleTime stays at the first write.
+"name": "should-stay-ready-while-a-rollout-defers-the-next-scale"
+"description": "should stay Ready while a rollout defers the next scale"
+"inputs":
+  "steps":
+  - "by": "scaling 1 -> 2"
+    "at": "0s"
+  - "by": "raising the metric while the rollout is still in progress"
+    "at": "10s"
+    "metric": "2.5"
+    "rollout": true
+"expected":
+  "steps":
+  - "replicas": 2
+    "desired": 2
+    "applied": 2
+    "condition":
+      "status": "False"
+      "reason": "NotDeferred"
+      "messageContains":
+      - "scaled 1 -> 2"
+    "ready":
+      "status": "True"
+      "reason": "Synced"
+      "messageContains":
+      - "scaled 1 -> 2"
+      "observedGenerationCurrent": true
+    "lastScaleTime": "set"
+    "observedGenerationCurrent": true
+  - "replicas": 2
+    "desired": 5
+    "applied": 2
+    "current": 1
+    "deferredSince": "10s"
+    "requeueAfter": "15s"
+    "condition":
+      "status": "True"
+      "reason": "RolloutInProgress"
+      "messageContains":
+      - "holding 2 replicas (wanted 5)"
+      - "Deployment rollout in progress"
+      "observedGenerationCurrent": true
+    "ready":
+      "status": "True"
+      "reason": "Synced"
+      "messageContains":
+      - "scale action deferred: RolloutInProgress; see ScalingDeferred"
+      "observedGenerationCurrent": true
+    "lastScaleTime": "unchanged"
+    "observedGenerationCurrent": true

@@ -381,13 +381,23 @@ func TestComputeDesiredFromMetrics(t *testing.T) {
 				}},
 			},
 		}
-		desired, haveMetric := (&LLMScalerReconciler{}).computeDesiredFromMetrics(
+		desired, haveMetric, hold := (&LLMScalerReconciler{}).computeDesiredFromMetrics(
 			context.Background(), scaler, tc.Inputs.Ready)
 		if haveMetric != tc.Expected.Have {
 			t.Errorf("haveMetric = %v, want %v", haveMetric, tc.Expected.Have)
 		}
 		if desired != tc.Expected.Desired {
 			t.Errorf("desired = %d, want %d", desired, tc.Expected.Desired)
+		}
+		if !tc.Expected.Have {
+			if hold.reason != autoscalingv1alpha1.ReasonMetricsUnavailable {
+				t.Errorf("hold reason = %q, want %q", hold.reason, autoscalingv1alpha1.ReasonMetricsUnavailable)
+			}
+			if !strings.Contains(hold.message, "no metric could be evaluated; holding replicas") {
+				t.Errorf("hold message = %q, want it to name the held replicas", hold.message)
+			}
+		} else if hold.reason != "" {
+			t.Errorf("hold reason = %q, want none", hold.reason)
 		}
 	})
 }

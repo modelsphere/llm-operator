@@ -1,0 +1,30 @@
+# The query cannot be evaluated, so the replica count stays at spec.
+"name": "should-report-metrics-unavailable-when-prometheus-is-unreachable"
+"description": "should report MetricsUnavailable when Prometheus is unreachable"
+"inputs":
+  "closeServer": true
+  "steps":
+  - "by": "reconciling with Prometheus down"
+    "at": "0s"
+"expected":
+  "steps":
+  - "replicas": 1
+    "desired": 1
+    "applied": 1
+    "current": 1
+    "deferredSince": null
+    "requeueAfter": "15s"
+    "condition":
+      "status": "False"
+      "reason": "NotDeferred"
+      "messageContains":
+      - "already at the step target"
+    "ready":
+      "status": "False"
+      "reason": "MetricsUnavailable"
+      "messageContains":
+      - "no metric could be evaluated; holding replicas"
+      - "failed to query prometheus"
+      "observedGenerationCurrent": true
+    "lastScaleTime": "unset"
+    "observedGenerationCurrent": true
