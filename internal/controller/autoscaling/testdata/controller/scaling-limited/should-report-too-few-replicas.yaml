@@ -23,11 +23,6 @@
       "reason": "Synced"
       "messageContains":
       - "scaled 5 -> 3"
-    "ready":
-      "status": "True"
-      "reason": "Synced"
-      "messageContains":
-      - "scaled 5 -> 3"
     "decision":
       "status": "True"
       "reason": "MetricsAvailable"

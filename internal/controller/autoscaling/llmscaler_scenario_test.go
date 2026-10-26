@@ -196,7 +196,7 @@ type stepExpect struct {
 	noMoreEvents                        bool
 	forcedWrite                         *bool
 	forcedWriteAt                       *time.Duration
-	ready                               *condExpect
+	active                              *condExpect
 	decision                            *condExpect
 	limited                             *condExpect
 	observedGenerationCurrent           bool
@@ -649,7 +649,7 @@ func assertScalerStatus(run *scenarioRun, step scenarioStep, prevLastScale *meta
 	exp := step.expect
 	if exp.desired == nil && exp.applied == nil && exp.current == nil &&
 		exp.deferredSince.kind == sinceUnchecked && exp.condition == nil &&
-		exp.ready == nil && exp.decision == nil && exp.limited == nil &&
+		exp.active == nil && exp.decision == nil && exp.limited == nil &&
 		!exp.observedGenerationCurrent && !exp.conditionsObservedGenerationCurrent &&
 		exp.generationGreaterThan == 0 && exp.lastScaleTime == lastScaleSkip {
 		return
@@ -669,12 +669,13 @@ func assertScalerStatus(run *scenarioRun, step scenarioStep, prevLastScale *meta
 	if exp.condition != nil {
 		assertCondition(scaler, autoscalingv1alpha1.ConditionAbleToScale, *exp.condition)
 	}
-	if exp.ready != nil {
-		assertCondition(scaler, autoscalingv1alpha1.ConditionReady, *exp.ready)
+	if exp.active != nil {
+		assertCondition(scaler, autoscalingv1alpha1.ConditionScalingActive, *exp.active)
 	}
 	if exp.decision != nil {
-		assertCondition(scaler, autoscalingv1alpha1.ConditionDecisionAvailable, *exp.decision)
+		assertCondition(scaler, autoscalingv1alpha1.ConditionScalingActive, *exp.decision)
 	}
+	expectDecisionMirrorsActive(scaler)
 	if exp.limited != nil {
 		assertCondition(scaler, autoscalingv1alpha1.ConditionScalingLimited, *exp.limited)
 	}
@@ -865,10 +866,9 @@ type customReconcileCase struct {
 	decisionReason            string
 	decisionMessageNonEmpty   bool
 	decisionMessageContains   []string
-	ready                     *condExpect
+	active                    *condExpect
 	observedGenerationCurrent bool
 	lastScaleTime             lastScaleExpect
-	mirrorDecisionMessage     bool
 }
 
 func runCustomProviderReconcile(tc customReconcileCase) {
@@ -904,8 +904,8 @@ func runCustomProviderReconcile(tc customReconcileCase) {
 	}
 	Expect(deploymentReplicas(f.ctx, f.deploy)).To(Equal(tc.wantReplicas))
 
-	needStatus := tc.wantDesired != nil || tc.decisionStatus != "" || tc.ready != nil ||
-		tc.observedGenerationCurrent || tc.lastScaleTime != lastScaleSkip || tc.mirrorDecisionMessage ||
+	needStatus := tc.wantDesired != nil || tc.decisionStatus != "" || tc.active != nil ||
+		tc.observedGenerationCurrent || tc.lastScaleTime != lastScaleSkip ||
 		len(tc.decisionMessageContains) > 0
 	if !needStatus {
 		return
@@ -922,34 +922,46 @@ func runCustomProviderReconcile(tc customReconcileCase) {
 		Expect(scaler.Status.ObservedGeneration).To(Equal(scaler.Generation))
 	}
 	assertLastScaleTime(scaler.Status.LastScaleTime, tc.lastScaleTime, nil, time.Time{}, false)
-	var decision *metav1.Condition
-	if tc.decisionStatus != "" || tc.mirrorDecisionMessage || len(tc.decisionMessageContains) > 0 {
-		decision = meta.FindStatusCondition(scaler.Status.Conditions, autoscalingv1alpha1.ConditionDecisionAvailable)
-		Expect(decision).NotTo(BeNil())
+	var active *metav1.Condition
+	if tc.decisionStatus != "" || len(tc.decisionMessageContains) > 0 {
+		active = meta.FindStatusCondition(scaler.Status.Conditions, autoscalingv1alpha1.ConditionScalingActive)
+		Expect(active).NotTo(BeNil())
 	}
 	if tc.decisionStatus != "" {
-		Expect(decision.Status).To(Equal(tc.decisionStatus))
+		Expect(active.Status).To(Equal(tc.decisionStatus))
 		if tc.decisionReason != "" {
-			Expect(decision.Reason).To(Equal(tc.decisionReason))
+			Expect(active.Reason).To(Equal(tc.decisionReason))
 		}
 		if tc.decisionMessageNonEmpty {
-			Expect(decision.Message).NotTo(BeEmpty())
+			Expect(active.Message).NotTo(BeEmpty())
 		}
 	}
 	for _, sub := range tc.decisionMessageContains {
 		if sub == "" {
 			Fail("decisionMessageContains entry is empty")
 		}
-		Expect(decision.Message).To(ContainSubstring(sub))
+		Expect(active.Message).To(ContainSubstring(sub))
 	}
-	if tc.ready != nil {
-		assertCondition(scaler, autoscalingv1alpha1.ConditionReady, *tc.ready)
+	if tc.active != nil {
+		assertCondition(scaler, autoscalingv1alpha1.ConditionScalingActive, *tc.active)
 	}
-	if tc.mirrorDecisionMessage {
-		ready := meta.FindStatusCondition(scaler.Status.Conditions, autoscalingv1alpha1.ConditionReady)
-		Expect(ready).NotTo(BeNil())
-		Expect(ready.Message).To(Equal(decision.Message))
+	expectDecisionMirrorsActive(scaler)
+}
+
+// expectDecisionMirrorsActive checks that the deprecated DecisionAvailable
+// condition matches ScalingActive whenever either one is present.
+func expectDecisionMirrorsActive(scaler *autoscalingv1alpha1.LLMScaler) {
+	active := meta.FindStatusCondition(scaler.Status.Conditions, autoscalingv1alpha1.ConditionScalingActive)
+	decision := meta.FindStatusCondition(scaler.Status.Conditions, autoscalingv1alpha1.ConditionDecisionAvailable) //nolint:staticcheck // deprecated mirror of ScalingActive, still written
+	if active == nil && decision == nil {
+		return
 	}
+	Expect(active).NotTo(BeNil())
+	Expect(decision).NotTo(BeNil())
+	Expect(decision.Status).To(Equal(active.Status))
+	Expect(decision.Reason).To(Equal(active.Reason))
+	Expect(decision.Message).To(Equal(active.Message))
+	Expect(decision.ObservedGeneration).To(Equal(active.ObservedGeneration))
 }
 
 // customAdmissionCase submits one scaler the CRD should reject.

@@ -31,12 +31,6 @@
   - {}
   - "replicas": 3
     "lastScaleTime": "set"
-    "ready":
-      "status": "True"
-      "reason": "Synced"
-      "messageContains":
-      - "scaled 5 -> 3"
-      "observedGenerationCurrent": true
     "observedGenerationCurrent": true
   - {}
   - "replicas": 3
@@ -47,13 +41,6 @@
       "status": "True"
       "messageContains":
       - "forced write paced to one per sync period"
-    "ready":
-      "status": "True"
-      "reason": "Synced"
-      "messageContains":
-      - "scale action deferred:"
-      - "see AbleToScale"
-      "observedGenerationCurrent": true
     "lastScaleTime": "unchanged"
   - "replicas": 3
     "requeueAfter": "1s"

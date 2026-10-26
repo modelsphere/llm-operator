@@ -21,12 +21,6 @@
       "status": "True"
       "reason": "Synced"
       "observedGenerationCurrent": true
-    "ready":
-      "status": "True"
-      "reason": "Synced"
-      "messageContains":
-      - "replica count is at the step target"
-      "observedGenerationCurrent": true
     "decision":
       "status": "True"
       "reason": "MetricsAvailable"
@@ -39,10 +33,6 @@
   - "replicas": 1
     "desired": 1
     "condition":
-      "status": "True"
-      "reason": "Synced"
-      "observedGenerationCurrent": true
-    "ready":
       "status": "True"
       "reason": "Synced"
       "observedGenerationCurrent": true

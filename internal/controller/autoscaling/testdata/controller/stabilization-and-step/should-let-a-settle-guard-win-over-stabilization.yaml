@@ -59,11 +59,6 @@
       "messageContains":
       - "holding 8 replicas (wanted 5)"
       - "previous scale-down has not settled"
-    "ready":
-      "status": "True"
-      "reason": "Synced"
-      "messageContains":
-      - "scale action deferred: ScaleDownSettling; see AbleToScale"
     "events":
     - "contains":
       - "ScalingDeferred"

@@ -1,6 +1,6 @@
 # ceil(1 * 0.5/0.5) = 1, which is already spec, and the deployment is fully rolled out.
-"name": "should-report-ready-on-a-no-op-without-a-lastscaletime"
-"description": "should report Ready on a no-op without a lastScaleTime"
+"name": "should-report-scaling-active-on-a-no-op-without-a-lastscaletime"
+"description": "should report ScalingActive on a no-op without a lastScaleTime"
 "inputs":
   "metric": "0.5"
   "steps":
@@ -19,12 +19,6 @@
       "reason": "Synced"
       "messageContains":
       - "already at the step target"
-      "observedGenerationCurrent": true
-    "ready":
-      "status": "True"
-      "reason": "Synced"
-      "messageContains":
-      - "replica count is at the step target"
       "observedGenerationCurrent": true
     "decision":
       "status": "True"

@@ -1,5 +1,5 @@
 # The first sync records DesiredWithinRange. Closing Prometheus makes
-# DecisionAvailable False, and raising maxReplicas bumps generation, so a
+# ScalingActive False, and raising maxReplicas bumps generation, so a
 # rewritten ScalingLimited would carry the new generation. It keeps the old one.
 "name": "should-leave-scalinglimited-unchanged-when-prometheus-is-unreachable"
 "description": "should leave ScalingLimited unchanged when Prometheus is unreachable"
@@ -25,9 +25,6 @@
     "decision":
       "status": "True"
       "reason": "MetricsAvailable"
-    "ready":
-      "status": "True"
-      "reason": "Synced"
   - "replicas": 1
     "desired": 1
     "generationGreaterThan": 1
@@ -37,9 +34,6 @@
       "messageContains":
       - "no prometheus metric could be evaluated"
       "observedGenerationCurrent": true
-    "ready":
-      "status": "False"
-      "reason": "DecisionUnavailable"
     "condition":
       "status": "True"
       "reason": "Synced"

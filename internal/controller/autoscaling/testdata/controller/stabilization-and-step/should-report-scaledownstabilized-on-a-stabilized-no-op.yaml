@@ -30,11 +30,6 @@
       "reason": "Synced"
       "messageContains":
       - "already at the step target"
-    "ready":
-      "status": "True"
-      "reason": "Synced"
-      "messageContains":
-      - "replica count is at the step target"
     "limited":
       "status": "False"
       "reason": "DesiredWithinRange"
@@ -51,11 +46,6 @@
       "reason": "ScaleDownStabilized"
       "messageContains":
       - "recent recommendations were higher than current one, applying the highest recent recommendation"
-    "ready":
-      "status": "True"
-      "reason": "Synced"
-      "messageContains":
-      - "replica count is at the step target"
     "decision":
       "status": "True"
       "reason": "MetricsAvailable"

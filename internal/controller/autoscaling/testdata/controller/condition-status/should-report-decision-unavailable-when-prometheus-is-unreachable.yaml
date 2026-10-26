@@ -19,7 +19,7 @@
       "reason": "Synced"
       "messageContains":
       - "already at the step target"
-    "ready":
+    "active":
       "status": "False"
       "reason": "DecisionUnavailable"
       "messageContains":

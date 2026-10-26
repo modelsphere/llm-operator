@@ -145,9 +145,9 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	gv, err := schema.ParseGroupVersion(targetRef.APIVersion)
 	if err != nil {
 		logger.Error(err, "invalid apiVersion in targetRef")
-		// Stop before a recommendation. DecisionAvailable and ScalingLimited
-		// are left as they are, and Ready copies AbleToScale.
-		r.recordReady(ctx, &scaler, metav1.ConditionFalse, autoscalingv1alpha1.ReasonInvalidSpec,
+		// Stop before a recommendation. ScalingActive, DecisionAvailable, and
+		// ScalingLimited are left as they are.
+		r.recordScaleFailure(ctx, &scaler, metav1.ConditionFalse, autoscalingv1alpha1.ReasonInvalidSpec,
 			fmt.Sprintf("targetRef.apiVersion %q does not parse: %s", targetRef.APIVersion, err.Error()))
 		return ctrl.Result{}, nil
 	}
@@ -170,13 +170,12 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	if err != nil {
 		logger.Error(err, "unable to fetch target resource", "kind", targetRef.Kind, "name", targetRef.Name)
-		// Requeue since the target might be created later. DecisionAvailable,
-		// ScalingLimited, deferredSince, and the replica counts are left as
-		// they are, so the deadline carries over once the target is readable
-		// again. AbleToScale is False with the read failure, and Ready copies
-		// that reason. A stale DecisionAvailable cannot decide Ready.
+		// Requeue since the target might be created later. ScalingActive,
+		// DecisionAvailable, ScalingLimited, deferredSince, and the replica
+		// counts are left as they are, so the deadline carries over once the
+		// target is readable again. AbleToScale is False with the read failure.
 		reason, msg := targetReadFailure(err, targetRef.Kind, targetRef.Name)
-		r.recordReady(ctx, &scaler, metav1.ConditionFalse, reason, msg)
+		r.recordScaleFailure(ctx, &scaler, metav1.ConditionFalse, reason, msg)
 		return ctrl.Result{RequeueAfter: retryPeriod}, nil
 	}
 
@@ -202,9 +201,10 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// 3. Compute the recommendation: metrics, clamped to min/max, damped on the
 	// way down by the stabilization window. This is what we want, independent of
-	// how fast we are allowed to get there. Both providers set DecisionAvailable
-	// here, before clamping. A missing signal is held at spec.replicas, apart
-	// from the min/max bounds, and ScalingLimited is left as it is.
+	// how fast we are allowed to get there. Both providers set ScalingActive
+	// here, before clamping; DecisionAvailable mirrors it. A missing signal is
+	// held at spec.replicas, apart from the min/max bounds, and ScalingLimited
+	// is left as it is.
 	rec := r.recommendReplicas(ctx, &scaler, req.NamespacedName, specReplicas, metricReady)
 	recommendedReplicas := rec.replicas
 
@@ -219,9 +219,9 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		logger.Info("Scale-down step capped", "recommended", recommendedReplicas, "thisStep", targetReplicas, "maxStepReplicas", scaler.Spec.ScaleDown.MaxStepReplicas)
 	}
 	// ScalingLimited is fixed once the recommendation and the step cap are both
-	// known, and before the write. A later write failure persists it, the same
-	// way it persists DecisionAvailable. No usable signal: leave it alone,
-	// including when it has never been set.
+	// known, and before the write, and only when ScalingActive is True. A later
+	// write failure persists it, the same way it persists ScalingActive. When
+	// ScalingActive is False, leave it alone, including when it has never been set.
 	if rec.signal {
 		limitedStatus, limitedReason, limitedMsg := scalingLimitedCondition(
 			rec.raw, scaler.Spec.MinReplicas, scaler.Spec.MaxReplicas,
@@ -234,8 +234,7 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// guard still matches, and forced writes. It is cleared only when no guard
 	// matches. It lives in status, so the deadline survives an operator restart.
 	// applied is the target's spec.replicas after this sync. A failed target
-	// update records AbleToScale and Ready and returns before replica counts
-	// are written.
+	// update records AbleToScale and returns before replica counts are written.
 	now := r.now()
 	timeout := deferTimeout(&scaler)
 	deferral := evaluateGuards(state, ScaleIntent{From: state.Spec, To: targetReplicas})
@@ -252,7 +251,6 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// otherwise ScaleDownStabilized when the window raised the recommendation;
 	// otherwise Synced. ScaleDownStabilized is not a guard, so it does not
 	// change which branch runs or whether deferredSince moves.
-	var syncedMsg string
 	switch {
 	case noop && (!guarded || scaler.Status.DeferredSince == nil):
 		// Nothing is being held back. A guard that matches on a no-op does not
@@ -261,7 +259,6 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// ScalingDeferred.
 		r.endDeferral(req.NamespacedName, &scaler)
 		setSyncedOrStabilized(&scaler, rec.stabilized, "replica count is already at the step target")
-		syncedMsg = "replica count is at the step target"
 	case noop:
 		// A guard still matches and the clock is already running. There is
 		// nothing to write, so deferredSince stays and this sync is not holding
@@ -269,13 +266,11 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		logger.Info("No scale write this sync; deferral clock still running", "reason", deferral.message, "deferredSince", scaler.Status.DeferredSince.Time)
 		setAbleToScaleCondition(&scaler, metav1.ConditionTrue, deferral.reason,
 			holdNoopMessage(deferral.message, scaler.Status.DeferredSince.Time, timeout))
-		syncedMsg = readyDeferredMessage(deferral.reason)
 	case guarded && !pastDeferTimeout(scaler.Status.DeferredSince, timeout, now):
 		r.holdScaleDeferred(&scaler, deferral, int32(specReplicas), targetReplicas, timeout, now)
 		logger.Info("Deferring scaling", "reason", deferral.message, "current", specReplicas, "ready", readyReplicas, "target", targetReplicas)
 		until := scaler.Status.DeferredSince.Time.Add(timeout).Sub(now)
 		requeueAfter = deferralRequeueAfter(syncPeriod, true, timeout, until, 0)
-		syncedMsg = readyDeferredMessage(deferral.reason)
 	case guarded && paceRemaining > 0:
 		// Deadline passed, but this process already forced a write within the
 		// last sync period. See lastForcedWrite.
@@ -286,7 +281,6 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 		setAbleToScaleCondition(&scaler, metav1.ConditionTrue, deferral.reason, msg)
 		requeueAfter = deferralRequeueAfter(syncPeriod, true, timeout, 0, paceRemaining)
-		syncedMsg = readyDeferredMessage(deferral.reason)
 	default:
 		// A normal write (no guard) or a forced write the pace allows. A failed
 		// target update returns before any deferral state is recorded.
@@ -296,14 +290,10 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, err
 		}
 		applied = wrote
-		syncedMsg = scaledMessage(int32(specReplicas), targetReplicas)
 	}
 
 	// 4. Update Status. currentReplicas is the raw ready count, not the ratio
-	// baseline: a fully-unready fleet reports 0. Ready copies AbleToScale when
-	// that condition is False, then DecisionAvailable when that condition is
-	// False, otherwise Synced.
-	applyReady(&scaler, syncedMsg)
+	// baseline: a fully-unready fleet reports 0.
 	scaler.Status.CurrentReplicas = int32(readyReplicas)
 	scaler.Status.DesiredReplicas = recommendedReplicas
 	scaler.Status.AppliedReplicas = applied
@@ -599,8 +589,6 @@ func holdPacedMessage(specReplicas, targetReplicas int32, guardMessage string, s
 //     This does not start, keep, or clear deferredSince, and it does not
 //     emit ScalingDeferred.
 //  3. Synced.
-//
-// Ready is chosen separately and stays True/Synced with syncedMsg.
 func setSyncedOrStabilized(scaler *autoscalingv1alpha1.LLMScaler, stabilized bool, syncedMsg string) {
 	if stabilized {
 		setAbleToScaleCondition(scaler, metav1.ConditionTrue, autoscalingv1alpha1.ReasonScaleDownStabilized, scaleDownStabilizedMessage)
@@ -630,7 +618,7 @@ func setScalingLimitedCondition(scaler *autoscalingv1alpha1.LLMScaler, status me
 }
 
 // scalingLimitedCondition is the HPA ScalingLimited condition for one sync
-// that had a usable signal. The caller invokes it only then, after the step
+// whose ScalingActive is True. The caller invokes it only then, after the step
 // cap and before the target write.
 //
 // Precedence, the constraint that bound the final write:
@@ -661,53 +649,12 @@ func scalingLimitedCondition(raw, minReplicas, maxReplicas, recommended, target,
 		"the desired count is within the acceptable range"
 }
 
-func setReadyCondition(scaler *autoscalingv1alpha1.LLMScaler, status metav1.ConditionStatus, reason, msg string) {
-	meta.SetStatusCondition(&scaler.Status.Conditions, metav1.Condition{
-		Type:               autoscalingv1alpha1.ConditionReady,
-		Status:             status,
-		Reason:             reason,
-		Message:            msg,
-		ObservedGeneration: scaler.Generation,
-	})
-}
-
-// readyDeferredMessage is the Ready summary while a guard holds the write.
-// The guard reason and the clock stay on AbleToScale.
-func readyDeferredMessage(reason string) string {
-	return fmt.Sprintf("scale action deferred: %s; see AbleToScale", reason)
-}
-
-// scaledMessage is the Ready and AbleToScale text for a normal write.
+// scaledMessage is the AbleToScale text for a normal write.
 func scaledMessage(from, to int32) string {
 	return fmt.Sprintf("scaled %d -> %d", from, to)
 }
 
-// applyReady sets Ready from the conditions already written on scaler.
-//
-// Precedence:
-//  1. AbleToScale False: Ready is False with that reason and message.
-//  2. DecisionAvailable False: Ready is False with that reason and message.
-//  3. Otherwise Ready is True / Synced. syncedMsg is the summary (a write, a
-//     no-op, or a deferral that points at AbleToScale).
-//
-// ScalingLimited is not an input and never affects Ready. Target-error paths
-// set AbleToScale False and do not evaluate DecisionAvailable. Rule 1 covers
-// them, so a stale DecisionAvailable cannot decide Ready. A target write
-// failure has already set DecisionAvailable and ScalingLimited for this sync,
-// and rule 1 still wins.
-func applyReady(scaler *autoscalingv1alpha1.LLMScaler, syncedMsg string) {
-	if able := meta.FindStatusCondition(scaler.Status.Conditions, autoscalingv1alpha1.ConditionAbleToScale); able != nil && able.Status == metav1.ConditionFalse {
-		setReadyCondition(scaler, metav1.ConditionFalse, able.Reason, able.Message)
-		return
-	}
-	if decision := meta.FindStatusCondition(scaler.Status.Conditions, autoscalingv1alpha1.ConditionDecisionAvailable); decision != nil && decision.Status == metav1.ConditionFalse {
-		setReadyCondition(scaler, metav1.ConditionFalse, decision.Reason, decision.Message)
-		return
-	}
-	setReadyCondition(scaler, metav1.ConditionTrue, autoscalingv1alpha1.ReasonSynced, syncedMsg)
-}
-
-// targetReadFailure is the Ready reason for a target Get that failed.
+// targetReadFailure is the AbleToScale reason for a target Get that failed.
 func targetReadFailure(err error, kind, name string) (string, string) {
 	if apierrors.IsNotFound(err) {
 		return autoscalingv1alpha1.ReasonTargetNotFound, fmt.Sprintf("target %s %q not found", kind, name)
@@ -715,17 +662,17 @@ func targetReadFailure(err error, kind, name string) (string, string) {
 	return autoscalingv1alpha1.ReasonTargetUnreadable, fmt.Sprintf("could not get target %s %q: %s", kind, name, err.Error())
 }
 
-// recordReady sets AbleToScale and derives Ready from it, then writes
-// status.observedGeneration. Callers use it when the sync stops before a
-// recommendation: an unparseable apiVersion, or a target Get that failed.
-// DecisionAvailable, ScalingLimited, the replica counts, deferredSince, and
-// lastScaleTime are left as they stand. Ready copies AbleToScale, so a stale
-// DecisionAvailable cannot decide it. A status-write error is logged; the
-// caller keeps its original result.
-func (r *LLMScalerReconciler) recordReady(ctx context.Context, scaler *autoscalingv1alpha1.LLMScaler, status metav1.ConditionStatus, reason, msg string) {
+// recordScaleFailure sets AbleToScale and writes status.observedGeneration.
+// Callers use it when the sync stops before a recommendation (an unparseable
+// apiVersion, or a target Get that failed) and when the target write failed.
+// ScalingActive, DecisionAvailable, ScalingLimited, the replica counts,
+// deferredSince, and lastScaleTime are left as they stand. A target write
+// failure therefore keeps the ScalingActive and ScalingLimited computed
+// earlier in that sync. A status-write error is logged; the caller keeps its
+// original result.
+func (r *LLMScalerReconciler) recordScaleFailure(ctx context.Context, scaler *autoscalingv1alpha1.LLMScaler, status metav1.ConditionStatus, reason, msg string) {
 	logger := logf.FromContext(ctx)
 	setAbleToScaleCondition(scaler, status, reason, msg)
-	applyReady(scaler, "")
 	scaler.Status.ObservedGeneration = scaler.Generation
 	if err := r.Status().Update(ctx, scaler); err != nil {
 		logger.Error(err, "failed to update scaler status")
@@ -733,13 +680,13 @@ func (r *LLMScalerReconciler) recordReady(ctx context.Context, scaler *autoscali
 }
 
 // recordTargetWriteFailure records AbleToScale False with TargetWriteFailed
-// after spec.replicas could not be written. Ready copies that reason, so the
-// DecisionAvailable computed earlier in this sync cannot decide Ready. That
-// DecisionAvailable is kept, and so is the ScalingLimited computed with the
-// recommendation before the write. deferredSince, the replica counts, and
-// lastScaleTime are left as they stand. The status write is best-effort.
+// after spec.replicas could not be written. The ScalingActive computed earlier
+// in this sync is kept, and so is the ScalingLimited computed with the
+// recommendation before the write. DecisionAvailable mirrors that ScalingActive.
+// deferredSince, the replica counts, and lastScaleTime are left as they stand.
+// The status write is best-effort.
 func (r *LLMScalerReconciler) recordTargetWriteFailure(ctx context.Context, scaler *autoscalingv1alpha1.LLMScaler, writeErr error) {
-	r.recordReady(ctx, scaler, metav1.ConditionFalse, autoscalingv1alpha1.ReasonTargetWriteFailed,
+	r.recordScaleFailure(ctx, scaler, metav1.ConditionFalse, autoscalingv1alpha1.ReasonTargetWriteFailed,
 		fmt.Sprintf("could not write spec.replicas: %s", writeErr.Error()))
 }
 
@@ -793,13 +740,13 @@ func (r *LLMScalerReconciler) stabilizeDesired(key types.NamespacedName, desired
 // Only the first step differs between providers: Prometheus derives the count
 // from per-replica measurements, Custom is handed the count outright. Both feed
 // the same clamping and damping below, so a scaler behaves identically once the
-// number exists. Both set DecisionAvailable before that clamping. The count in
-// a Prometheus MetricsAvailable message is the raw maximum, not the clamped
-// or stabilized value returned here.
+// number exists. Both set ScalingActive before that clamping; DecisionAvailable
+// mirrors it. The count in a Prometheus MetricsAvailable message is the raw
+// maximum, not the clamped or stabilized value returned here.
 //
 // When the provider has no usable signal, the count is held at spec.replicas,
 // apart from the min/max bounds (the clamp below still runs, and so does
-// stabilization). signal is false, DecisionAvailable is False, and the caller
+// stabilization). signal is false, ScalingActive is False, and the caller
 // leaves ScalingLimited alone. raw is the provider count before that clamp
 // and is meaningful only when signal is true.
 func (r *LLMScalerReconciler) recommendReplicas(ctx context.Context, scaler *autoscalingv1alpha1.LLMScaler, key types.NamespacedName, specReplicas, readyReplicas int64) replicaRecommendation {
@@ -936,10 +883,11 @@ func (r *LLMScalerReconciler) forgetRecommendations(key types.NamespacedName) {
 // maximum desired replica count (HPA-style: ceil(readyReplicas * value/target))
 // and whether any metric was successfully evaluated.
 //
-// It always sets DecisionAvailable. True / MetricsAvailable names how many
-// metrics evaluated and recommends the raw maximum: the value returned here,
-// before the caller clamps it or runs scale-down stabilization. False /
-// DecisionUnavailable names prometheus and the last error.
+// It always sets ScalingActive, and DecisionAvailable mirrors it. True /
+// MetricsAvailable names how many metrics evaluated and recommends the raw
+// maximum: the value returned here, before the caller clamps it or runs
+// scale-down stabilization. False / DecisionUnavailable names prometheus and
+// the last error.
 func (r *LLMScalerReconciler) computeDesiredFromMetrics(ctx context.Context, scaler *autoscalingv1alpha1.LLMScaler, readyReplicas int64) (int32, bool) {
 	logger := logf.FromContext(ctx)
 	var maxDesired int32
@@ -1002,7 +950,7 @@ func (r *LLMScalerReconciler) computeDesiredFromMetrics(ctx context.Context, sca
 	return maxDesired, true
 }
 
-// noPrometheusMetricMessage is the DecisionAvailable text when the Prometheus
+// noPrometheusMetricMessage is the ScalingActive text when the Prometheus
 // provider evaluated nothing. The prefix names the source. lastErr is the last
 // query failure, non-finite sample, or target-parse error, when there was one.
 func noPrometheusMetricMessage(lastErr error) string {
@@ -1025,7 +973,8 @@ func noPrometheusMetricMessage(lastErr error) string {
 // answering in a schema we don't know is not read as a recommendation of zero.
 // The count is held at spec.replicas, apart from the min/max bounds — the same
 // rule the Prometheus path applies to a query that cannot be evaluated.
-// DecisionAvailable says why, on every return. ScalingLimited is left as it is.
+// ScalingActive says why, on every return. DecisionAvailable mirrors it.
+// ScalingLimited is left as it is.
 func (r *LLMScalerReconciler) desiredFromCustomProvider(ctx context.Context, scaler *autoscalingv1alpha1.LLMScaler) (int32, bool) {
 	logger := logf.FromContext(ctx)
 
@@ -1058,14 +1007,22 @@ func (r *LLMScalerReconciler) desiredFromCustomProvider(ctx context.Context, sca
 	return replicas, true
 }
 
+// setDecisionCondition writes ScalingActive and the deprecated
+// DecisionAvailable together, with the same status, reason, message, and
+// observedGeneration.
 func setDecisionCondition(scaler *autoscalingv1alpha1.LLMScaler, status metav1.ConditionStatus, reason, msg string) {
-	meta.SetStatusCondition(&scaler.Status.Conditions, metav1.Condition{
-		Type:               autoscalingv1alpha1.ConditionDecisionAvailable,
-		Status:             status,
-		Reason:             reason,
-		Message:            msg,
-		ObservedGeneration: scaler.Generation,
-	})
+	for _, condType := range []string{
+		autoscalingv1alpha1.ConditionScalingActive,
+		autoscalingv1alpha1.ConditionDecisionAvailable, //nolint:staticcheck // deprecated mirror of ScalingActive, still written
+	} {
+		meta.SetStatusCondition(&scaler.Status.Conditions, metav1.Condition{
+			Type:               condType,
+			Status:             status,
+			Reason:             reason,
+			Message:            msg,
+			ObservedGeneration: scaler.Generation,
+		})
+	}
 }
 
 // markColdestPodsForDeletion biases the ReplicaSet toward removing the
@@ -1200,7 +1157,7 @@ func promInstantQuery(serverAddress, promQL string, headers map[string]string) (
 
 	if resp.StatusCode != http.StatusOK {
 		// Cap the body the way the decision client does. The error is quoted
-		// on DecisionAvailable and Ready, and an error page can be large.
+		// on ScalingActive, and an error page can be large.
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return nil, fmt.Errorf("prometheus returned status %d: %s", resp.StatusCode, string(body))
 	}

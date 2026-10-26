@@ -1,6 +1,9 @@
 # The first sync defers a scale-up (wanted 2) while the deployment rolls out.
-# Deleting the target records TargetNotFound on AbleToScale and Ready without
-# clearing deferredSince or the replica counts already written.
+# Deleting the target records TargetNotFound on AbleToScale without clearing
+# deferredSince, ScalingActive, or the replica counts already written.
+# The delete does not change metadata.generation, so ScalingActive's
+# observedGeneration from the first sync is still current. The reason staying
+# MetricsAvailable is what shows the read path did not rewrite it.
 "name": "should-report-target-not-found-and-leave-the-deferral-untouched"
 "description": "should report TargetNotFound and leave the deferral untouched"
 "inputs":
@@ -27,11 +30,12 @@
       - "Deployment rollout in progress"
       - "will apply after 600s"
       "observedGenerationCurrent": true
-    "ready":
+    "active":
       "status": "True"
-      "reason": "Synced"
+      "reason": "MetricsAvailable"
       "messageContains":
-      - "scale action deferred: RolloutInProgress; see AbleToScale"
+      - "evaluated 1 of 1 metrics"
+      - "recommends 2 replicas"
       "observedGenerationCurrent": true
     "lastScaleTime": "unset"
     "observedGenerationCurrent": true
@@ -46,11 +50,11 @@
       "messageContains":
       - "not found"
       "observedGenerationCurrent": true
-    "ready":
-      "status": "False"
-      "reason": "TargetNotFound"
+    "active":
+      "status": "True"
+      "reason": "MetricsAvailable"
       "messageContains":
-      - "not found"
+      - "recommends 2 replicas"
       "observedGenerationCurrent": true
     "lastScaleTime": "unset"
     "observedGenerationCurrent": true

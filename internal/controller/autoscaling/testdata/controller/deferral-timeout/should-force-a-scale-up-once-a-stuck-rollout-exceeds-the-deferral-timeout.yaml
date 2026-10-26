@@ -27,12 +27,6 @@
       - "2026-03-01T12:00:00Z"
       - "will apply after 60s"
       "observedGenerationCurrent": true
-    "ready":
-      "status": "True"
-      "reason": "Synced"
-      "messageContains":
-      - "scale action deferred: RolloutInProgress; see AbleToScale"
-      "observedGenerationCurrent": true
     "lastScaleTime": "unset"
     "observedGenerationCurrent": true
     "events":
@@ -54,12 +48,6 @@
       "reason": "DeferralTimedOut"
       "messageContains":
       - "scaling 1 -> 2 anyway"
-      "observedGenerationCurrent": true
-    "ready":
-      "status": "True"
-      "reason": "Synced"
-      "messageContains":
-      - "scaled 1 -> 2"
       "observedGenerationCurrent": true
     "lastScaleTime": "set"
     "observedGenerationCurrent": true

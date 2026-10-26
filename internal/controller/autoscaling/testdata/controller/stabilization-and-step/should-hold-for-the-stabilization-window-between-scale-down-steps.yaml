@@ -38,9 +38,4 @@
       "reason": "ScaleDownStabilized"
       "messageContains":
       - "recent recommendations were higher than current one, applying the highest recent recommendation"
-    "ready":
-      "status": "True"
-      "reason": "Synced"
-      "messageContains":
-      - "replica count is at the step target"
   - "replicas": 3

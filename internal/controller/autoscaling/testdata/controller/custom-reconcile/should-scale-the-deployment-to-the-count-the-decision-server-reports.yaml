@@ -13,11 +13,11 @@
   "decisionReason": "DecisionReceived"
   "decisionMessageContains":
   - "decision server recommends 4 replicas"
-  "ready":
+  "active":
     "status": "True"
-    "reason": "Synced"
+    "reason": "DecisionReceived"
     "messageContains":
-    - "scaled 1 -> 4"
+    - "decision server recommends 4 replicas"
     "observedGenerationCurrent": true
   "lastScaleTime": "set"
   "observedGenerationCurrent": true

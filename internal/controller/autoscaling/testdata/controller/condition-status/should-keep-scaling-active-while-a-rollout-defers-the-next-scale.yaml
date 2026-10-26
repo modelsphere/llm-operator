@@ -1,8 +1,8 @@
 # First sync: ceil(1 * 0.85/0.5) = 2, a normal write. Second sync raises the
 # metric to 2.5 while the new spec is still unobserved, so ceil(1 * 2.5/0.5) = 5
 # is held by the rollout guard. lastScaleTime stays at the first write.
-"name": "should-stay-ready-while-a-rollout-defers-the-next-scale"
-"description": "should stay Ready while a rollout defers the next scale"
+"name": "should-keep-scaling-active-while-a-rollout-defers-the-next-scale"
+"description": "should keep ScalingActive while a rollout defers the next scale"
 "inputs":
   "steps":
   - "by": "scaling 1 -> 2"
@@ -21,11 +21,12 @@
       "reason": "Synced"
       "messageContains":
       - "scaled 1 -> 2"
-    "ready":
+    "active":
       "status": "True"
-      "reason": "Synced"
+      "reason": "MetricsAvailable"
       "messageContains":
-      - "scaled 1 -> 2"
+      - "evaluated 1 of 1 metrics"
+      - "recommends 2 replicas"
       "observedGenerationCurrent": true
     "lastScaleTime": "set"
     "observedGenerationCurrent": true
@@ -42,11 +43,11 @@
       - "holding 2 replicas (wanted 5)"
       - "Deployment rollout in progress"
       "observedGenerationCurrent": true
-    "ready":
+    "active":
       "status": "True"
-      "reason": "Synced"
+      "reason": "MetricsAvailable"
       "messageContains":
-      - "scale action deferred: RolloutInProgress; see AbleToScale"
+      - "recommends 5 replicas"
       "observedGenerationCurrent": true
     "lastScaleTime": "unchanged"
     "observedGenerationCurrent": true

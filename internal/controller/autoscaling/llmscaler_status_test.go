@@ -40,12 +40,12 @@ import (
 	autoscalingv1alpha1 "github.com/modelsphere/llm-operator/api/autoscaling/v1alpha1"
 )
 
-// TestTargetWriteFailedRecordsReady covers the path envtest cannot force: the
-// target update returns an error. AbleToScale and Ready record
-// TargetWriteFailed, and observedGeneration is recorded. The deferral and
-// the replica counts already in status are left alone, and the original
-// error is returned.
-func TestTargetWriteFailedRecordsReady(t *testing.T) {
+// TestTargetWriteFailedRecordsAbleToScale covers the path envtest cannot force:
+// the target update returns an error. AbleToScale records TargetWriteFailed,
+// and observedGeneration is recorded. The deferral and the replica counts
+// already in status are left alone, and the original error is returned.
+// ScalingActive from this sync is kept.
+func TestTargetWriteFailedRecordsAbleToScale(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprintf(w, `{"status":"success","data":{"result":[{"value":[0,"%s"]}]}}`, "0.85")
 	}))
@@ -102,19 +102,6 @@ func TestTargetWriteFailedRecordsReady(t *testing.T) {
 	if got.Status.ObservedGeneration != got.Generation {
 		t.Errorf("observedGeneration = %d, want generation %d", got.Status.ObservedGeneration, got.Generation)
 	}
-	ready := meta.FindStatusCondition(got.Status.Conditions, autoscalingv1alpha1.ConditionReady)
-	if ready == nil {
-		t.Fatal("Ready condition missing")
-	}
-	if ready.Status != metav1.ConditionFalse || ready.Reason != autoscalingv1alpha1.ReasonTargetWriteFailed {
-		t.Errorf("Ready = %s/%s, want False/%s", ready.Status, ready.Reason, autoscalingv1alpha1.ReasonTargetWriteFailed)
-	}
-	if !strings.Contains(ready.Message, "injected write failure") {
-		t.Errorf("Ready message = %q, want the injected error", ready.Message)
-	}
-	if ready.ObservedGeneration != got.Generation {
-		t.Errorf("Ready.observedGeneration = %d, want %d", ready.ObservedGeneration, got.Generation)
-	}
 	if got.Status.LastScaleTime != nil {
 		t.Errorf("lastScaleTime = %s, want unset", got.Status.LastScaleTime.Time)
 	}
@@ -139,9 +126,9 @@ func TestTargetWriteFailedRecordsReady(t *testing.T) {
 		t.Errorf("AbleToScale.observedGeneration = %d, want %d", able.ObservedGeneration, got.Generation)
 	}
 	// The recommendation was computed before the write failed, so
-	// DecisionAvailable from this sync is kept, and so is ScalingLimited.
-	// Ready still copies AbleToScale.
-	assertDecisionAvailable(t, got, metav1.ConditionTrue, autoscalingv1alpha1.ReasonMetricsAvailable,
+	// ScalingActive from this sync is kept, and so is ScalingLimited.
+	// DecisionAvailable mirrors ScalingActive.
+	assertScalingActive(t, got, metav1.ConditionTrue, autoscalingv1alpha1.ReasonMetricsAvailable,
 		"evaluated 1 of 1 metrics; recommends 2 replicas")
 	assertScalingLimited(t, got, metav1.ConditionFalse, autoscalingv1alpha1.ReasonDesiredWithinRange,
 		"the desired count is within the acceptable range")
@@ -156,8 +143,9 @@ func TestTargetWriteFailedRecordsReady(t *testing.T) {
 }
 
 // TestTargetUnreadableRecordsAbleToScale covers a target Get that fails for a
-// reason other than NotFound. AbleToScale and Ready are False with
-// TargetUnreadable. deferredSince and the replica counts stay as seeded.
+// reason other than NotFound. AbleToScale is False with TargetUnreadable.
+// deferredSince and the replica counts stay as seeded. ScalingActive is not
+// written on this path.
 func TestTargetUnreadableRecordsAbleToScale(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprintf(w, `{"status":"success","data":{"result":[{"value":[0,"%s"]}]}}`, "0.85")
@@ -172,15 +160,20 @@ func TestTargetUnreadableRecordsAbleToScale(t *testing.T) {
 		AppliedReplicas: 4,
 		DeferredSince:   &deferred,
 	}
-	// A stale signal from an earlier sync must not decide Ready, and the read
-	// failure must leave the condition alone.
-	meta.SetStatusCondition(&scaler.Status.Conditions, metav1.Condition{
-		Type:               autoscalingv1alpha1.ConditionDecisionAvailable,
-		Status:             metav1.ConditionFalse,
-		Reason:             autoscalingv1alpha1.ReasonDecisionUnavailable,
-		Message:            "stale custom decision",
-		ObservedGeneration: 1,
-	})
+	// A read failure stops before a recommendation, so a signal from an earlier
+	// sync is left alone. ScalingActive and DecisionAvailable stay paired.
+	for _, condType := range []string{
+		autoscalingv1alpha1.ConditionScalingActive,
+		autoscalingv1alpha1.ConditionDecisionAvailable, //nolint:staticcheck // deprecated mirror of ScalingActive, still written
+	} {
+		meta.SetStatusCondition(&scaler.Status.Conditions, metav1.Condition{
+			Type:               condType,
+			Status:             metav1.ConditionFalse,
+			Reason:             autoscalingv1alpha1.ReasonDecisionUnavailable,
+			Message:            "stale custom decision",
+			ObservedGeneration: 1,
+		})
+	}
 	// A read failure stops before a recommendation, so a ScalingLimited from
 	// an earlier sync is left alone.
 	meta.SetStatusCondition(&scaler.Status.Conditions, metav1.Condition{
@@ -223,20 +216,9 @@ func TestTargetUnreadableRecordsAbleToScale(t *testing.T) {
 	if got.Status.ObservedGeneration != got.Generation {
 		t.Errorf("observedGeneration = %d, want generation %d", got.Status.ObservedGeneration, got.Generation)
 	}
-	ready := meta.FindStatusCondition(got.Status.Conditions, autoscalingv1alpha1.ConditionReady)
-	if ready == nil {
-		t.Fatal("Ready condition missing")
-	}
-	if ready.Status != metav1.ConditionFalse || ready.Reason != autoscalingv1alpha1.ReasonTargetUnreadable {
-		t.Errorf("Ready = %s/%s, want False/%s", ready.Status, ready.Reason, autoscalingv1alpha1.ReasonTargetUnreadable)
-	}
-	if !strings.Contains(ready.Message, "injected read failure") {
-		t.Errorf("Ready message = %q, want the injected error", ready.Message)
-	}
-	if ready.ObservedGeneration != got.Generation {
-		t.Errorf("Ready.observedGeneration = %d, want %d", ready.ObservedGeneration, got.Generation)
-	}
-	assertConditionLeft(t, got, autoscalingv1alpha1.ConditionDecisionAvailable,
+	assertConditionLeft(t, got, autoscalingv1alpha1.ConditionScalingActive,
+		metav1.ConditionFalse, autoscalingv1alpha1.ReasonDecisionUnavailable, "stale custom decision", 1)
+	assertConditionLeft(t, got, autoscalingv1alpha1.ConditionDecisionAvailable, //nolint:staticcheck // deprecated mirror of ScalingActive, still written
 		metav1.ConditionFalse, autoscalingv1alpha1.ReasonDecisionUnavailable, "stale custom decision", 1)
 	assertConditionLeft(t, got, autoscalingv1alpha1.ConditionScalingLimited,
 		metav1.ConditionTrue, autoscalingv1alpha1.ReasonTooManyReplicas, "seeded limit", 1)
@@ -247,8 +229,8 @@ func TestTargetUnreadableRecordsAbleToScale(t *testing.T) {
 	if able.Status != metav1.ConditionFalse || able.Reason != autoscalingv1alpha1.ReasonTargetUnreadable {
 		t.Errorf("AbleToScale = %s/%s, want False/%s", able.Status, able.Reason, autoscalingv1alpha1.ReasonTargetUnreadable)
 	}
-	if able.Message != ready.Message {
-		t.Errorf("AbleToScale message = %q, want Ready's %q", able.Message, ready.Message)
+	if !strings.Contains(able.Message, "injected read failure") {
+		t.Errorf("AbleToScale message = %q, want the injected error", able.Message)
 	}
 	if able.ObservedGeneration != got.Generation {
 		t.Errorf("AbleToScale.observedGeneration = %d, want %d", able.ObservedGeneration, got.Generation)
@@ -266,9 +248,8 @@ func TestTargetUnreadableRecordsAbleToScale(t *testing.T) {
 }
 
 // TestMissingCustomProviderRecordsInvalidSpec runs the admission-rejected
-// pairing through the controller. The fleet stays where it is. Ready and
-// DecisionAvailable are False/InvalidSpec; AbleToScale still describes the
-// scale decision.
+// pairing through the controller. The fleet stays where it is. ScalingActive
+// is False/InvalidSpec; AbleToScale still describes the scale decision.
 func TestMissingCustomProviderRecordsInvalidSpec(t *testing.T) {
 	scaler := prometheusScaler("http://127.0.0.1:9")
 	scaler.Spec.MetricProvider = autoscalingv1alpha1.MetricProviderCustom
@@ -296,14 +277,7 @@ func TestMissingCustomProviderRecordsInvalidSpec(t *testing.T) {
 	if err := c.Get(context.Background(), client.ObjectKeyFromObject(scaler), got); err != nil {
 		t.Fatal(err)
 	}
-	ready := meta.FindStatusCondition(got.Status.Conditions, autoscalingv1alpha1.ConditionReady)
-	if ready == nil || ready.Status != metav1.ConditionFalse || ready.Reason != autoscalingv1alpha1.ReasonInvalidSpec {
-		t.Fatalf("Ready = %+v, want False/InvalidSpec", ready)
-	}
-	if ready.Message != "spec.customProvider is not set" {
-		t.Errorf("Ready message = %q", ready.Message)
-	}
-	assertDecisionAvailable(t, got, metav1.ConditionFalse, autoscalingv1alpha1.ReasonInvalidSpec, ready.Message)
+	assertScalingActive(t, got, metav1.ConditionFalse, autoscalingv1alpha1.ReasonInvalidSpec, "spec.customProvider is not set")
 	able := meta.FindStatusCondition(got.Status.Conditions, autoscalingv1alpha1.ConditionAbleToScale)
 	if able == nil {
 		t.Fatal("AbleToScale condition missing")
@@ -340,11 +314,11 @@ func TestMissingCustomProviderRecordsInvalidSpec(t *testing.T) {
 	}
 }
 
-// TestMetricProviderSwitchOverwritesDecisionAvailable reconciles a Custom
+// TestMetricProviderSwitchOverwritesScalingActive reconciles a Custom
 // scaler, switches it to Prometheus, then switches it back. Each sync that
-// reaches a recommendation overwrites DecisionAvailable, so neither provider's
-// condition lingers.
-func TestMetricProviderSwitchOverwritesDecisionAvailable(t *testing.T) {
+// reaches a recommendation overwrites ScalingActive, so neither provider's
+// condition lingers. DecisionAvailable mirrors it.
+func TestMetricProviderSwitchOverwritesScalingActive(t *testing.T) {
 	prom := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprintf(w, `{"status":"success","data":{"result":[{"value":[0,"%s"]}]}}`, "0.5")
 	}))
@@ -395,11 +369,7 @@ func TestMetricProviderSwitchOverwritesDecisionAvailable(t *testing.T) {
 	}
 	assertSynced := func(got *autoscalingv1alpha1.LLMScaler, reason, message string) {
 		t.Helper()
-		assertDecisionAvailable(t, got, metav1.ConditionTrue, reason, message)
-		ready := meta.FindStatusCondition(got.Status.Conditions, autoscalingv1alpha1.ConditionReady)
-		if ready == nil || ready.Status != metav1.ConditionTrue || ready.Reason != autoscalingv1alpha1.ReasonSynced {
-			t.Errorf("Ready = %+v, want True/Synced", ready)
-		}
+		assertScalingActive(t, got, metav1.ConditionTrue, reason, message)
 	}
 
 	got := reconcileAndGet()
@@ -443,22 +413,35 @@ func assertScalingLimited(t *testing.T, got *autoscalingv1alpha1.LLMScaler, stat
 	}
 }
 
-// assertDecisionAvailable checks the signal condition written on this sync,
-// including the generation it was computed from.
-func assertDecisionAvailable(t *testing.T, got *autoscalingv1alpha1.LLMScaler, status metav1.ConditionStatus, reason, message string) {
+// scalingActive returns ScalingActive and checks that DecisionAvailable mirrors it.
+func scalingActive(t *testing.T, scaler *autoscalingv1alpha1.LLMScaler) *metav1.Condition {
 	t.Helper()
-	decision := meta.FindStatusCondition(got.Status.Conditions, autoscalingv1alpha1.ConditionDecisionAvailable)
-	if decision == nil {
-		t.Fatal("DecisionAvailable condition missing")
+	active := meta.FindStatusCondition(scaler.Status.Conditions, autoscalingv1alpha1.ConditionScalingActive)
+	if active == nil {
+		t.Fatal("ScalingActive condition missing")
 	}
-	if decision.Status != status || decision.Reason != reason {
-		t.Errorf("DecisionAvailable = %s/%s, want %s/%s", decision.Status, decision.Reason, status, reason)
+	decision := meta.FindStatusCondition(scaler.Status.Conditions, autoscalingv1alpha1.ConditionDecisionAvailable) //nolint:staticcheck // deprecated mirror of ScalingActive, still written
+	if decision == nil || decision.Status != active.Status || decision.Reason != active.Reason ||
+		decision.Message != active.Message || decision.ObservedGeneration != active.ObservedGeneration {
+		t.Errorf("DecisionAvailable = %+v, want it to mirror ScalingActive %+v", decision, active)
 	}
-	if decision.Message != message {
-		t.Errorf("DecisionAvailable message = %q, want %q", decision.Message, message)
+	return active
+}
+
+// assertScalingActive checks the signal condition written on this sync,
+// including the generation it was computed from. DecisionAvailable must
+// mirror it.
+func assertScalingActive(t *testing.T, got *autoscalingv1alpha1.LLMScaler, status metav1.ConditionStatus, reason, message string) {
+	t.Helper()
+	active := scalingActive(t, got)
+	if active.Status != status || active.Reason != reason {
+		t.Errorf("ScalingActive = %s/%s, want %s/%s", active.Status, active.Reason, status, reason)
 	}
-	if decision.ObservedGeneration != got.Generation {
-		t.Errorf("DecisionAvailable.observedGeneration = %d, want %d", decision.ObservedGeneration, got.Generation)
+	if active.Message != message {
+		t.Errorf("ScalingActive message = %q, want %q", active.Message, message)
+	}
+	if active.ObservedGeneration != got.Generation {
+		t.Errorf("ScalingActive.observedGeneration = %d, want %d", active.ObservedGeneration, got.Generation)
 	}
 }
 

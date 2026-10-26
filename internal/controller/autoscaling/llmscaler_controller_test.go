@@ -53,8 +53,8 @@ var _ = Describe("LLMScaler Controller", func() {
 			ginkgocases.Entries("testdata/controller/deferral-status", scalerDesc))
 		DescribeTable("forced-write pacing", runScalerCase,
 			ginkgocases.Entries("testdata/controller/forced-write-pacing", scalerDesc))
-		DescribeTable("ready status", runScalerCase,
-			ginkgocases.Entries("testdata/controller/ready-status", scalerDesc))
+		DescribeTable("condition status", runScalerCase,
+			ginkgocases.Entries("testdata/controller/condition-status", scalerDesc))
 
 		for _, f := range cases.MustLoad[deferDefaultFile]("testdata/controller/crd-default") {
 			tc := f.Case

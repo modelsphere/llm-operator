@@ -158,7 +158,7 @@ type stepExpected struct {
 	NoMoreEvents                        bool            `json:"noMoreEvents"`
 	ForcedWrite                         *bool           `json:"forcedWrite"`
 	ForcedWriteAt                       *cases.Duration `json:"forcedWriteAt"`
-	Ready                               *condInput      `json:"ready"`
+	Active                              *condInput      `json:"active"`
 	Decision                            *condInput      `json:"decision"`
 	Limited                             *condInput      `json:"limited"`
 	ObservedGenerationCurrent           bool            `json:"observedGenerationCurrent"`
@@ -187,9 +187,9 @@ func (e stepExpected) expect() stepExpect {
 		cond := e.Condition.expect()
 		out.condition = &cond
 	}
-	if e.Ready != nil {
-		ready := e.Ready.expect()
-		out.ready = &ready
+	if e.Active != nil {
+		active := e.Active.expect()
+		out.active = &active
 	}
 	if e.Decision != nil {
 		decision := e.Decision.expect()
@@ -318,10 +318,9 @@ type customReconcileFile struct {
 		DecisionReason            string     `json:"decisionReason"`
 		DecisionMessageNonEmpty   bool       `json:"decisionMessageNonEmpty"`
 		DecisionMessageContains   []string   `json:"decisionMessageContains"`
-		Ready                     *condInput `json:"ready"`
+		Active                    *condInput `json:"active"`
 		ObservedGenerationCurrent bool       `json:"observedGenerationCurrent"`
 		LastScaleTime             string     `json:"lastScaleTime"`
-		MirrorDecisionMessage     bool       `json:"mirrorDecisionMessage"`
 	} `json:"expected"`
 }
 
@@ -343,11 +342,10 @@ func runCustomReconcileFile(c customReconcileFile) {
 		decisionMessageContains:   exp.DecisionMessageContains,
 		observedGenerationCurrent: exp.ObservedGenerationCurrent,
 		lastScaleTime:             parseLastScale(exp.LastScaleTime),
-		mirrorDecisionMessage:     exp.MirrorDecisionMessage,
 	}
-	if exp.Ready != nil {
-		ready := exp.Ready.expect()
-		tc.ready = &ready
+	if exp.Active != nil {
+		active := exp.Active.expect()
+		tc.active = &active
 	}
 	if c.Inputs.Deploy != nil {
 		st := c.Inputs.Deploy.state()

@@ -39,16 +39,16 @@ spec:
       jsonPath: .status.desiredReplicas
       name: DesiredReplicas
       type: integer
-    - description: Whether the last sync completed cleanly
-      jsonPath: .status.conditions[?(@.type=="Ready")].status
-      name: Ready
+    - description: Whether a usable scaling signal was received
+      jsonPath: .status.conditions[?(@.type=="ScalingActive")].status
+      name: Active
       type: string
     - description: Whether this sync could scale the target
       jsonPath: .status.conditions[?(@.type=="AbleToScale")].status
       name: AbleToScale
       type: string
-    - description: 'Why the scaler is or is not scaling: Synced, a hold reason, DeferralTimedOut,
-        or a failure'
+    - description: 'Why the scaler is or is not scaling: Synced, a hold reason (RolloutInProgress,
+        ScaleDownSettling, ScaleDownStabilized), DeferralTimedOut, or a failure'
       jsonPath: .status.conditions[?(@.type=="AbleToScale")].reason
       name: Scaling
       type: string
@@ -330,8 +330,8 @@ spec:
               conditions:
                 description: |-
                   conditions represent the current state of the LLMScaler resource:
-                  Ready, DecisionAvailable, AbleToScale, and ScalingLimited.
-                  ScalingLimited never affects Ready.
+                  AbleToScale, ScalingActive, and ScalingLimited. DecisionAvailable is
+                  deprecated and mirrors ScalingActive.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

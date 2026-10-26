@@ -24,7 +24,6 @@ import (
 	"strings"
 	"testing"
 
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -285,22 +284,19 @@ func TestRecommendReplicasCustomProvider(t *testing.T) {
 		if got != tc.Expected.Replicas {
 			t.Fatalf("recommendReplicas = %d, want %d", got, tc.Expected.Replicas)
 		}
-		decision := meta.FindStatusCondition(scaler.Status.Conditions, autoscalingv1alpha1.ConditionDecisionAvailable)
-		if decision == nil {
-			t.Fatal("DecisionAvailable condition missing")
-		}
+		active := scalingActive(t, scaler)
 		if tc.Expected.HoldReason != "" {
-			if decision.Status != metav1.ConditionFalse || decision.Reason != tc.Expected.HoldReason {
-				t.Errorf("DecisionAvailable = %s/%s, want False/%s", decision.Status, decision.Reason, tc.Expected.HoldReason)
+			if active.Status != metav1.ConditionFalse || active.Reason != tc.Expected.HoldReason {
+				t.Errorf("ScalingActive = %s/%s, want False/%s", active.Status, active.Reason, tc.Expected.HoldReason)
 			}
-		} else if decision.Status != metav1.ConditionTrue || decision.Reason != autoscalingv1alpha1.ReasonDecisionReceived {
-			t.Errorf("DecisionAvailable = %s/%s, want True/%s", decision.Status, decision.Reason, autoscalingv1alpha1.ReasonDecisionReceived)
-		} else if decision.Message != fmt.Sprintf("decision server recommends %s replicas", in.Active) {
+		} else if active.Status != metav1.ConditionTrue || active.Reason != autoscalingv1alpha1.ReasonDecisionReceived {
+			t.Errorf("ScalingActive = %s/%s, want True/%s", active.Status, active.Reason, autoscalingv1alpha1.ReasonDecisionReceived)
+		} else if active.Message != fmt.Sprintf("decision server recommends %s replicas", in.Active) {
 			// The message names the server's count, before clamping.
-			t.Errorf("DecisionAvailable message = %q, want the raw decision", decision.Message)
+			t.Errorf("ScalingActive message = %q, want the raw decision", active.Message)
 		}
-		if sub := tc.Expected.HoldMessageContains; sub != "" && !strings.Contains(decision.Message, sub) {
-			t.Errorf("DecisionAvailable message = %q, want it to contain %q", decision.Message, sub)
+		if sub := tc.Expected.HoldMessageContains; sub != "" && !strings.Contains(active.Message, sub) {
+			t.Errorf("ScalingActive message = %q, want it to contain %q", active.Message, sub)
 		}
 	})
 }
@@ -360,11 +356,11 @@ func TestRecommendReplicasDefaultProviderIsPrometheus(t *testing.T) {
 		if got != tc.Expected.Replicas {
 			t.Errorf("recommendReplicas = %d, want %d", got, tc.Expected.Replicas)
 		}
-		decision := meta.FindStatusCondition(scaler.Status.Conditions, autoscalingv1alpha1.ConditionDecisionAvailable)
-		if decision == nil || decision.Status != metav1.ConditionTrue || decision.Reason != autoscalingv1alpha1.ReasonMetricsAvailable {
-			t.Errorf("DecisionAvailable = %+v, want True/%s", decision, autoscalingv1alpha1.ReasonMetricsAvailable)
-		} else if !strings.Contains(decision.Message, fmt.Sprintf("recommends %d replicas", tc.Expected.Replicas)) {
-			t.Errorf("DecisionAvailable message = %q, want the raw recommendation", decision.Message)
+		active := scalingActive(t, scaler)
+		if active.Status != metav1.ConditionTrue || active.Reason != autoscalingv1alpha1.ReasonMetricsAvailable {
+			t.Errorf("ScalingActive = %+v, want True/%s", active, autoscalingv1alpha1.ReasonMetricsAvailable)
+		} else if !strings.Contains(active.Message, fmt.Sprintf("recommends %d replicas", tc.Expected.Replicas)) {
+			t.Errorf("ScalingActive message = %q, want the raw recommendation", active.Message)
 		}
 		if gotPath != tc.Expected.Path {
 			t.Errorf("path = %q, want %q", gotPath, tc.Expected.Path)

@@ -1,6 +1,6 @@
 # A normal write lands first. An apiVersion with more than one slash does not
-# parse, so the next sync records InvalidSpec on AbleToScale and Ready and
-# leaves the replica counts, lastScaleTime, and DecisionAvailable alone.
+# parse, so the next sync records InvalidSpec on AbleToScale and leaves the
+# replica counts, lastScaleTime, and ScalingActive alone.
 "name": "should-report-invalid-spec-when-targetref-apiversion-does-not-parse"
 "description": "should report InvalidSpec when targetRef.apiVersion does not parse"
 "inputs":
@@ -17,11 +17,6 @@
     "applied": 2
     "current": 1
     "condition":
-      "status": "True"
-      "reason": "Synced"
-      "messageContains":
-      - "scaled 1 -> 2"
-    "ready":
       "status": "True"
       "reason": "Synced"
       "messageContains":
@@ -47,12 +42,6 @@
     "current": 1
     "requeueAfter": "0s"
     "condition":
-      "status": "False"
-      "reason": "InvalidSpec"
-      "messageContains":
-      - "apps/v1/extra"
-      "observedGenerationCurrent": true
-    "ready":
       "status": "False"
       "reason": "InvalidSpec"
       "messageContains":

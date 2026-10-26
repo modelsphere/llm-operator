@@ -21,12 +21,11 @@
   "decisionMessageContains":
   - "custom provider returned no decision"
   - "decision server"
-  "ready":
+  "active":
     "status": "False"
     "reason": "DecisionUnavailable"
     "messageContains":
     - "custom provider returned no decision"
     "observedGenerationCurrent": true
-  "mirrorDecisionMessage": true
   "lastScaleTime": "unset"
   "observedGenerationCurrent": true
