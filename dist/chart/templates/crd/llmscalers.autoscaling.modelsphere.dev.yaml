@@ -42,8 +42,9 @@ spec:
       jsonPath: .status.conditions[?(@.type=="AbleToScale")].status
       name: AbleToScale
       type: string
-    - description: 'Why the scaler is or is not scaling: Synced, a hold reason (RolloutInProgress,
-        ScaleDownSettling, ScaleDownStabilized), DeferralTimedOut, or a failure'
+    - description: 'The AbleToScale reason: Synced, a guard hold (RolloutInProgress,
+        ScaleDownSettling), DeferralTimedOut, ScaleDownStabilized while the stabilization
+        window keeps the count, or a failure'
       jsonPath: .status.conditions[?(@.type=="AbleToScale")].reason
       name: Scaling
       type: string

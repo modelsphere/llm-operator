@@ -84,7 +84,7 @@ Only read when `metricProvider: Custom`.
 | `lastScaleTime` | metav1.Time | When the controller last successfully wrote `spec.replicas` on the target. Set on a normal write and on a write forced after the deferral timeout. Left unchanged on a no-op, a deferral, pacing, or an error. |
 | `conditions` | []metav1.Condition | `AbleToScale`, `ScalingActive`, and `ScalingLimited`. `DecisionAvailable` is deprecated and mirrors `ScalingActive`. See [Conditions](#conditions). |
 
-`kubectl get llmscalers` prints `MinReplicas`, `MaxReplicas`, `CurrentReplicas`, `DesiredReplicas`, `Active` (the `ScalingActive` condition status), `AbleToScale` (the `AbleToScale` condition status), and `Scaling` (the `AbleToScale` condition reason: `Synced`, a hold reason (`RolloutInProgress`, `ScaleDownSettling`, `ScaleDownStabilized`), `DeferralTimedOut`, or a failure). `ScalingLimited` is not a printed column.
+`kubectl get llmscalers` prints `MinReplicas`, `MaxReplicas`, `CurrentReplicas`, `DesiredReplicas`, `Active` (the `ScalingActive` condition status), `AbleToScale` (the `AbleToScale` condition status), and `Scaling` (the `AbleToScale` condition reason: `Synced`, a guard hold (`RolloutInProgress`, `ScaleDownSettling`), `DeferralTimedOut`, `ScaleDownStabilized` while the stabilization window keeps the count, or a failure). `ScalingLimited` is not a printed column.
 
 ### Conditions
 

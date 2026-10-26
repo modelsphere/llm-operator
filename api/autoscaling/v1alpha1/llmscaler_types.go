@@ -499,7 +499,7 @@ type LLMScalerStatus struct {
 // +kubebuilder:printcolumn:name="DesiredReplicas",type="integer",JSONPath=".status.desiredReplicas",description="The desired number of replicas"
 // +kubebuilder:printcolumn:name="Active",type="string",JSONPath=".status.conditions[?(@.type==\"ScalingActive\")].status",description="Whether a usable scaling signal was received"
 // +kubebuilder:printcolumn:name="AbleToScale",type="string",JSONPath=".status.conditions[?(@.type==\"AbleToScale\")].status",description="Whether this sync could scale the target"
-// +kubebuilder:printcolumn:name="Scaling",type="string",JSONPath=".status.conditions[?(@.type==\"AbleToScale\")].reason",description="Why the scaler is or is not scaling: Synced, a hold reason (RolloutInProgress, ScaleDownSettling, ScaleDownStabilized), DeferralTimedOut, or a failure"
+// +kubebuilder:printcolumn:name="Scaling",type="string",JSONPath=".status.conditions[?(@.type==\"AbleToScale\")].reason",description="The AbleToScale reason: Synced, a guard hold (RolloutInProgress, ScaleDownSettling), DeferralTimedOut, ScaleDownStabilized while the stabilization window keeps the count, or a failure"
 
 // LLMScaler is the Schema for the llmscalers API
 type LLMScaler struct {
