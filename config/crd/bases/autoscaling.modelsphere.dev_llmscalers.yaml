@@ -159,7 +159,7 @@ spec:
                         aggregate away every label the source varies on (backend, model, route,
                         pod). A query that errors, returns no data, or returns NaN/Inf is skipped
                         for that sync rather than read as zero; if every metric is skipped the
-                        replica count is held where it is.
+                        replica count is held at spec.replicas, apart from the min/max bounds.
                       type: string
                     target:
                       description: |-
@@ -320,8 +320,10 @@ spec:
                 format: int32
                 type: integer
               conditions:
-                description: conditions represent the current state of the LLMScaler
-                  resource.
+                description: |-
+                  conditions represent the current state of the LLMScaler resource:
+                  Ready, DecisionAvailable, AbleToScale, and ScalingLimited.
+                  ScalingLimited never affects Ready.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

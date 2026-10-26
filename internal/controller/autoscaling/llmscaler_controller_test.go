@@ -45,6 +45,8 @@ var _ = Describe("LLMScaler Controller", func() {
 			ginkgocases.Entries("testdata/controller/settle-guard", scalerDesc))
 		DescribeTable("stabilization and max step", runScalerCase,
 			ginkgocases.Entries("testdata/controller/stabilization-and-step", scalerDesc))
+		DescribeTable("scaling limited", runScalerCase,
+			ginkgocases.Entries("testdata/controller/scaling-limited", scalerDesc))
 		DescribeTable("deferral timeout", runScalerCase,
 			ginkgocases.Entries("testdata/controller/deferral-timeout", scalerDesc))
 		DescribeTable("deferral status", runScalerCase,

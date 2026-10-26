@@ -149,6 +149,7 @@ type scenarioStep struct {
 	deleteDeploy   bool
 	apiVersion     string
 	maxReplicas    *int32
+	closeServer    bool
 	expect         stepExpect
 }
 
@@ -197,6 +198,7 @@ type stepExpect struct {
 	forcedWriteAt                       *time.Duration
 	ready                               *condExpect
 	decision                            *condExpect
+	limited                             *condExpect
 	observedGenerationCurrent           bool
 	conditionsObservedGenerationCurrent bool
 	generationGreaterThan               int64
@@ -214,6 +216,9 @@ type condExpect struct {
 	// observedGenerationStale requires ObservedGeneration to differ from the
 	// scaler's generation: a later sync left a condition written earlier alone.
 	observedGenerationStale bool
+	// absent requires the condition to be missing. The other fields must be
+	// unset; a present condition fails the step.
+	absent bool
 }
 
 // eventExpect is one event in the order the recorder received it.
@@ -590,6 +595,9 @@ func runScenarioStep(run *scenarioRun, step scenarioStep) {
 	if step.maxReplicas != nil {
 		patchMaxReplicas(f.ctx, f.scaler, *step.maxReplicas)
 	}
+	if step.closeServer {
+		f.server.Close()
+	}
 	var prevLastScale *metav1.Time
 	if step.expect.lastScaleTime == lastScaleUnchanged {
 		prevLastScale = scalerLastScaleTime(f.ctx, f.scaler)
@@ -641,9 +649,9 @@ func assertScalerStatus(run *scenarioRun, step scenarioStep, prevLastScale *meta
 	exp := step.expect
 	if exp.desired == nil && exp.applied == nil && exp.current == nil &&
 		exp.deferredSince.kind == sinceUnchecked && exp.condition == nil &&
-		exp.ready == nil && exp.decision == nil && !exp.observedGenerationCurrent &&
-		!exp.conditionsObservedGenerationCurrent && exp.generationGreaterThan == 0 &&
-		exp.lastScaleTime == lastScaleSkip {
+		exp.ready == nil && exp.decision == nil && exp.limited == nil &&
+		!exp.observedGenerationCurrent && !exp.conditionsObservedGenerationCurrent &&
+		exp.generationGreaterThan == 0 && exp.lastScaleTime == lastScaleSkip {
 		return
 	}
 	scaler := &autoscalingv1alpha1.LLMScaler{}
@@ -666,6 +674,9 @@ func assertScalerStatus(run *scenarioRun, step scenarioStep, prevLastScale *meta
 	}
 	if exp.decision != nil {
 		assertCondition(scaler, autoscalingv1alpha1.ConditionDecisionAvailable, *exp.decision)
+	}
+	if exp.limited != nil {
+		assertCondition(scaler, autoscalingv1alpha1.ConditionScalingLimited, *exp.limited)
 	}
 	if exp.observedGenerationCurrent {
 		Expect(scaler.Status.ObservedGeneration).To(Equal(scaler.Generation))
@@ -703,6 +714,14 @@ func assertDeferredSince(scaler *autoscalingv1alpha1.LLMScaler, exp sinceExpect,
 
 func assertCondition(scaler *autoscalingv1alpha1.LLMScaler, condType string, exp condExpect) {
 	cond := meta.FindStatusCondition(scaler.Status.Conditions, condType)
+	if exp.absent {
+		if exp.status != "" || exp.reason != "" || len(exp.messageContains) > 0 ||
+			exp.observedGenerationCurrent || exp.observedGenerationStale {
+			Fail("absent condition also sets fields")
+		}
+		Expect(cond).To(BeNil())
+		return
+	}
 	Expect(cond).NotTo(BeNil())
 	if exp.status != "" {
 		Expect(cond.Status).To(Equal(exp.status))

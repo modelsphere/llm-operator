@@ -1,0 +1,73 @@
+# The window is holding 5 when the fleet is moved to 8 with only 6 ready.
+# Stabilization would still name ScaleDownStabilized, but the settle guard is
+# deferring the write, so ScaleDownSettling wins. The previous
+# ScaleDownStabilized counts as a changed reason, and ScalingDeferred fires once.
+"name": "should-let-a-settle-guard-win-over-stabilization"
+"description": "should let a settle guard win over stabilization"
+"inputs":
+  "spec":
+    "stabilizationWindowSeconds": 300
+  "steps":
+  - "by": "recording a recommendation of 5"
+    "at": "0s"
+    "metric": "0.5"
+    "deploy":
+      "spec": 5
+      "replicas": 5
+      "updated": 5
+      "ready": 5
+      "available": 5
+  - "by": "dipping the metric so the window, not Synced, describes the no-op"
+    "at": "10s"
+    "metric": "0"
+  - "by": "deferring the stabilized scale-down while the fleet is short of ready"
+    "at": "20s"
+    "metric": "0"
+    "deploy":
+      "spec": 8
+      "replicas": 8
+      "updated": 8
+      "ready": 6
+      "available": 6
+"expected":
+  "steps":
+  - "replicas": 5
+    "desired": 5
+    "deferredSince": null
+    "condition":
+      "status": "True"
+      "reason": "Synced"
+    "noMoreEvents": true
+  - "replicas": 5
+    "desired": 5
+    "deferredSince": null
+    "condition":
+      "status": "True"
+      "reason": "ScaleDownStabilized"
+      "messageContains":
+      - "recent recommendations were higher than current one, applying the highest recent recommendation"
+    "noMoreEvents": true
+  - "replicas": 8
+    "desired": 5
+    "applied": 8
+    "current": 6
+    "deferredSince": "20s"
+    "requeueAfter": "15s"
+    "condition":
+      "status": "True"
+      "reason": "ScaleDownSettling"
+      "messageContains":
+      - "holding 8 replicas (wanted 5)"
+      - "previous scale-down has not settled"
+    "ready":
+      "status": "True"
+      "reason": "Synced"
+      "messageContains":
+      - "scale action deferred: ScaleDownSettling; see AbleToScale"
+    "events":
+    - "contains":
+      - "ScalingDeferred"
+      - "holding 8 replicas (wanted 5)"
+      - "previous scale-down has not settled"
+    "noMoreEvents": true
+    "lastScaleTime": "unset"

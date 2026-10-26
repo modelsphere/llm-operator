@@ -1,0 +1,28 @@
+# ceil(1 * 3/0.5) = 6, capped at maxReplicas 5.
+"name": "should-report-too-many-replicas"
+"description": "should report ScalingLimited TooManyReplicas when the recommendation is capped at maxReplicas"
+"inputs":
+  "metric": "3"
+  "steps":
+  - "by": "scaling a hot metric up to maxReplicas"
+"expected":
+  "steps":
+  - "replicas": 5
+    "desired": 5
+    "applied": 5
+    "condition":
+      "status": "True"
+      "reason": "Synced"
+      "messageContains":
+      - "scaled 1 -> 5"
+    "decision":
+      "status": "True"
+      "reason": "MetricsAvailable"
+      "messageContains":
+      - "recommends 6 replicas"
+    "limited":
+      "status": "True"
+      "reason": "TooManyReplicas"
+      "messageContains":
+      - "the desired replica count is more than the maximum replica count"
+      "observedGenerationCurrent": true

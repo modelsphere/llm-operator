@@ -1,0 +1,41 @@
+# ceil(5 * 0/0.5) = 0, raised to minReplicas 3. No step cap, so TooFewReplicas.
+"name": "should-report-too-few-replicas"
+"description": "should report ScalingLimited TooFewReplicas when the recommendation is raised to minReplicas"
+"inputs":
+  "spec":
+    "minReplicas": 3
+  "metric": "0"
+  "steps":
+  - "by": "scaling an idle fleet up to minReplicas"
+    "deploy":
+      "spec": 5
+      "replicas": 5
+      "updated": 5
+      "ready": 5
+      "available": 5
+"expected":
+  "steps":
+  - "replicas": 3
+    "desired": 3
+    "applied": 3
+    "condition":
+      "status": "True"
+      "reason": "Synced"
+      "messageContains":
+      - "scaled 5 -> 3"
+    "ready":
+      "status": "True"
+      "reason": "Synced"
+      "messageContains":
+      - "scaled 5 -> 3"
+    "decision":
+      "status": "True"
+      "reason": "MetricsAvailable"
+      "messageContains":
+      - "recommends 0 replicas"
+    "limited":
+      "status": "True"
+      "reason": "TooFewReplicas"
+      "messageContains":
+      - "the desired replica count is less than the minimum replica count"
+      "observedGenerationCurrent": true

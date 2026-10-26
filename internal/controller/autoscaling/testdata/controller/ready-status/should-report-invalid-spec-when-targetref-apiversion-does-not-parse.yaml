@@ -33,6 +33,12 @@
       - "evaluated 1 of 1 metrics"
       - "recommends 2 replicas"
       "observedGenerationCurrent": true
+    "limited":
+      "status": "False"
+      "reason": "DesiredWithinRange"
+      "messageContains":
+      - "the desired count is within the acceptable range"
+      "observedGenerationCurrent": true
     "lastScaleTime": "set"
     "observedGenerationCurrent": true
   - "replicas": 2
@@ -58,6 +64,12 @@
       "messageContains":
       - "evaluated 1 of 1 metrics"
       - "recommends 2 replicas"
+      "observedGenerationStale": true
+    "limited":
+      "status": "False"
+      "reason": "DesiredWithinRange"
+      "messageContains":
+      - "the desired count is within the acceptable range"
       "observedGenerationStale": true
     "lastScaleTime": "unchanged"
     "observedGenerationCurrent": true

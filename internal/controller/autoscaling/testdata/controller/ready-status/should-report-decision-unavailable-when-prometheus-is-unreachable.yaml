@@ -33,5 +33,7 @@
       - "no prometheus metric could be evaluated"
       - "prometheus"
       "observedGenerationCurrent": true
+    "limited":
+      "absent": true
     "lastScaleTime": "unset"
     "observedGenerationCurrent": true

@@ -281,7 +281,7 @@ func TestRecommendReplicasCustomProvider(t *testing.T) {
 		key := types.NamespacedName{Namespace: "ns", Name: "s"}
 		// specReplicas is what "hold where it is" means. The files set it to the
 		// same figure as readyReplicas so a hold is not confused with a clamp.
-		got := r.recommendReplicas(context.Background(), scaler, key, in.ReadyReplicas, in.SpecReplicas)
+		got := r.recommendReplicas(context.Background(), scaler, key, in.ReadyReplicas, in.SpecReplicas).replicas
 		if got != tc.Expected.Replicas {
 			t.Fatalf("recommendReplicas = %d, want %d", got, tc.Expected.Replicas)
 		}
@@ -356,7 +356,7 @@ func TestRecommendReplicasDefaultProviderIsPrometheus(t *testing.T) {
 
 		r := &LLMScalerReconciler{}
 		key := types.NamespacedName{Namespace: "ns", Name: "s"}
-		got := r.recommendReplicas(context.Background(), scaler, key, tc.Inputs.ReadyReplicas, tc.Inputs.SpecReplicas)
+		got := r.recommendReplicas(context.Background(), scaler, key, tc.Inputs.ReadyReplicas, tc.Inputs.SpecReplicas).replicas
 		if got != tc.Expected.Replicas {
 			t.Errorf("recommendReplicas = %d, want %d", got, tc.Expected.Replicas)
 		}

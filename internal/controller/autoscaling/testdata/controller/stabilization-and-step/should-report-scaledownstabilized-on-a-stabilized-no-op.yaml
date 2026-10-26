@@ -1,0 +1,70 @@
+# First sync records 5. The dip to 0 would clamp to minReplicas, but the window
+# keeps 5, so the sync is a no-op. AbleToScale is ScaleDownStabilized and the
+# deferral is cleared, the same as a Synced no-op. No ScalingDeferred event.
+"name": "should-report-scaledownstabilized-on-a-stabilized-no-op"
+"description": "should report ScaleDownStabilized on a stabilized no-op"
+"inputs":
+  "spec":
+    "stabilizationWindowSeconds": 300
+  "metric": "0.5"
+  "deploy":
+    "spec": 5
+    "replicas": 5
+    "updated": 5
+    "ready": 5
+    "available": 5
+  "steps":
+  - "by": "recording the recommendation the window will hold"
+    "at": "0s"
+  - "by": "dipping the metric inside the window"
+    "at": "10s"
+    "metric": "0"
+"expected":
+  "steps":
+  - "replicas": 5
+    "desired": 5
+    "applied": 5
+    "deferredSince": null
+    "condition":
+      "status": "True"
+      "reason": "Synced"
+      "messageContains":
+      - "already at the step target"
+    "ready":
+      "status": "True"
+      "reason": "Synced"
+      "messageContains":
+      - "replica count is at the step target"
+    "limited":
+      "status": "False"
+      "reason": "DesiredWithinRange"
+      "messageContains":
+      - "the desired count is within the acceptable range"
+    "noMoreEvents": true
+  - "replicas": 5
+    "desired": 5
+    "applied": 5
+    "current": 5
+    "deferredSince": null
+    "condition":
+      "status": "True"
+      "reason": "ScaleDownStabilized"
+      "messageContains":
+      - "recent recommendations were higher than current one, applying the highest recent recommendation"
+    "ready":
+      "status": "True"
+      "reason": "Synced"
+      "messageContains":
+      - "replica count is at the step target"
+    "decision":
+      "status": "True"
+      "reason": "MetricsAvailable"
+      "messageContains":
+      - "recommends 0 replicas"
+    "limited":
+      "status": "True"
+      "reason": "TooFewReplicas"
+      "messageContains":
+      - "the desired replica count is less than the minimum replica count"
+    "lastScaleTime": "unset"
+    "noMoreEvents": true

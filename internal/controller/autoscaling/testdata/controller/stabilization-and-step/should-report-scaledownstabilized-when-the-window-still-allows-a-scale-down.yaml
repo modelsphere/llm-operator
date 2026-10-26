@@ -1,0 +1,59 @@
+# The window holds a recent recommendation of 3 while the raw count clamps to
+# minReplicas. Spec is 5, so the sync still writes, and AbleToScale names the
+# window rather than Synced. Ready keeps the scaled message.
+"name": "should-report-scaledownstabilized-when-the-window-still-allows-a-scale-down"
+"description": "should report ScaleDownStabilized when the window still allows a scale-down"
+"inputs":
+  "spec":
+    "stabilizationWindowSeconds": 300
+  "steps":
+  - "by": "recording a recommendation of 3"
+    "at": "0s"
+    "metric": "0.5"
+    "deploy":
+      "spec": 3
+      "replicas": 3
+      "updated": 3
+      "ready": 3
+      "available": 3
+  - "by": "scaling down only as far as the window allows"
+    "at": "10s"
+    "metric": "0"
+    "deploy":
+      "spec": 5
+      "replicas": 5
+      "updated": 5
+      "ready": 5
+      "available": 5
+"expected":
+  "steps":
+  - "replicas": 3
+    "desired": 3
+    "deferredSince": null
+    "condition":
+      "status": "True"
+      "reason": "Synced"
+      "messageContains":
+      - "already at the step target"
+    "noMoreEvents": true
+  - "replicas": 3
+    "desired": 3
+    "applied": 3
+    "deferredSince": null
+    "condition":
+      "status": "True"
+      "reason": "ScaleDownStabilized"
+      "messageContains":
+      - "recent recommendations were higher than current one, applying the highest recent recommendation"
+    "ready":
+      "status": "True"
+      "reason": "Synced"
+      "messageContains":
+      - "scaled 5 -> 3"
+    "limited":
+      "status": "True"
+      "reason": "TooFewReplicas"
+      "messageContains":
+      - "the desired replica count is less than the minimum replica count"
+    "lastScaleTime": "set"
+    "noMoreEvents": true

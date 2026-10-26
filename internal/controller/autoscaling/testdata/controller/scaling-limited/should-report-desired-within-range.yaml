@@ -1,0 +1,21 @@
+# ceil(1 * 0.85/0.5) = 2, inside minReplicas 1 and maxReplicas 5, and no step cap.
+"name": "should-report-desired-within-range"
+"description": "should report ScalingLimited DesiredWithinRange when nothing bounds the recommendation"
+"inputs":
+  "steps":
+  - "by": "scaling within min and max with no step cap"
+"expected":
+  "steps":
+  - "replicas": 2
+    "desired": 2
+    "condition":
+      "status": "True"
+      "reason": "Synced"
+      "messageContains":
+      - "scaled 1 -> 2"
+    "limited":
+      "status": "False"
+      "reason": "DesiredWithinRange"
+      "messageContains":
+      - "the desired count is within the acceptable range"
+      "observedGenerationCurrent": true

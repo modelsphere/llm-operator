@@ -1,0 +1,33 @@
+# ceil(5 * 0/0.5) = 0, which is also below minReplicas. maxStepReplicas changes
+# the write from 1 to 3, so ScaleDownLimit wins over TooFewReplicas.
+"name": "should-report-scaledownlimit"
+"description": "should report ScalingLimited ScaleDownLimit when maxStepReplicas caps the write"
+"inputs":
+  "spec":
+    "maxStepReplicas": 2
+  "metric": "0"
+  "steps":
+  - "by": "taking one capped step down from 5"
+    "deploy":
+      "spec": 5
+      "replicas": 5
+      "updated": 5
+      "ready": 5
+      "available": 5
+"expected":
+  "steps":
+  - "replicas": 3
+    "desired": 1
+    "applied": 3
+    "condition":
+      "status": "True"
+      "reason": "Synced"
+      "messageContains":
+      - "scaled 5 -> 3"
+    "limited":
+      "status": "True"
+      "reason": "ScaleDownLimit"
+      "messageContains":
+      - "the desired replica count is decreasing faster than the maximum scale rate"
+      - "maxStepReplicas 2"
+      "observedGenerationCurrent": true

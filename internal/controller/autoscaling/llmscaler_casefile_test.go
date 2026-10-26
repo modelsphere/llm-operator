@@ -113,6 +113,7 @@ type stepInput struct {
 	DeleteDeploy   bool           `json:"deleteDeploy"`
 	APIVersion     string         `json:"apiVersion"`
 	MaxReplicas    *int32         `json:"maxReplicas"`
+	CloseServer    bool           `json:"closeServer"`
 }
 
 type condInput struct {
@@ -121,6 +122,8 @@ type condInput struct {
 	MessageContains           []string `json:"messageContains"`
 	ObservedGenerationCurrent bool     `json:"observedGenerationCurrent"`
 	ObservedGenerationStale   bool     `json:"observedGenerationStale"`
+	// Absent requires the condition to be missing. Other fields must be unset.
+	Absent bool `json:"absent"`
 }
 
 func (c condInput) expect() condExpect {
@@ -130,6 +133,7 @@ func (c condInput) expect() condExpect {
 		messageContains:           c.MessageContains,
 		observedGenerationCurrent: c.ObservedGenerationCurrent,
 		observedGenerationStale:   c.ObservedGenerationStale,
+		absent:                    c.Absent,
 	}
 }
 
@@ -156,6 +160,7 @@ type stepExpected struct {
 	ForcedWriteAt                       *cases.Duration `json:"forcedWriteAt"`
 	Ready                               *condInput      `json:"ready"`
 	Decision                            *condInput      `json:"decision"`
+	Limited                             *condInput      `json:"limited"`
 	ObservedGenerationCurrent           bool            `json:"observedGenerationCurrent"`
 	ConditionsObservedGenerationCurrent bool            `json:"conditionsObservedGenerationCurrent"`
 	GenerationGreaterThan               int64           `json:"generationGreaterThan"`
@@ -190,6 +195,10 @@ func (e stepExpected) expect() stepExpect {
 		decision := e.Decision.expect()
 		out.decision = &decision
 	}
+	if e.Limited != nil {
+		limited := e.Limited.expect()
+		out.limited = &limited
+	}
 	if len(e.Events) > 0 {
 		out.events = make([]eventExpect, len(e.Events))
 		for i, ev := range e.Events {
@@ -212,6 +221,7 @@ func (s stepInput) step(exp stepExpected) scenarioStep {
 		deleteDeploy:   s.DeleteDeploy,
 		apiVersion:     s.APIVersion,
 		maxReplicas:    s.MaxReplicas,
+		closeServer:    s.CloseServer,
 		expect:         exp.expect(),
 	}
 	if s.Deploy != nil {

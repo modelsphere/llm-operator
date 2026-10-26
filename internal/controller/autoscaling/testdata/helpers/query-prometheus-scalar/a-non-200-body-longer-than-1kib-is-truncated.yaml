@@ -1,0 +1,9 @@
+"name": "a-non-200-body-longer-than-1kib-is-truncated"
+"description": "a non-200 body longer than 1 KiB is truncated"
+"inputs":
+  "status": 500
+  "errorBodyBytes": 4096
+"expected":
+  "truncatedBodyBytes": 1024
+  "errorContains":
+  - "prometheus returned status 500"

@@ -25,5 +25,22 @@
   "steps":
   - {}
   - "replicas": 3
-  - {}
+    "condition":
+      "status": "True"
+      "reason": "Synced"
+      "messageContains":
+      - "scaled 5 -> 3"
+  - "replicas": 3
+    "desired": 3
+    "deferredSince": null
+    "condition":
+      "status": "True"
+      "reason": "ScaleDownStabilized"
+      "messageContains":
+      - "recent recommendations were higher than current one, applying the highest recent recommendation"
+    "ready":
+      "status": "True"
+      "reason": "Synced"
+      "messageContains":
+      - "replica count is at the step target"
   - "replicas": 3

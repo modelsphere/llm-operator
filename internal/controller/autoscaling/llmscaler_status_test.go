@@ -139,9 +139,12 @@ func TestTargetWriteFailedRecordsReady(t *testing.T) {
 		t.Errorf("AbleToScale.observedGeneration = %d, want %d", able.ObservedGeneration, got.Generation)
 	}
 	// The recommendation was computed before the write failed, so
-	// DecisionAvailable from this sync is kept. Ready still copies AbleToScale.
+	// DecisionAvailable from this sync is kept, and so is ScalingLimited.
+	// Ready still copies AbleToScale.
 	assertDecisionAvailable(t, got, metav1.ConditionTrue, autoscalingv1alpha1.ReasonMetricsAvailable,
 		"evaluated 1 of 1 metrics; recommends 2 replicas")
+	assertScalingLimited(t, got, metav1.ConditionFalse, autoscalingv1alpha1.ReasonDesiredWithinRange,
+		"the desired count is within the acceptable range")
 
 	deploy := &appsv1.Deployment{}
 	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "ns", Name: "d"}, deploy); err != nil {
@@ -176,6 +179,15 @@ func TestTargetUnreadableRecordsAbleToScale(t *testing.T) {
 		Status:             metav1.ConditionFalse,
 		Reason:             autoscalingv1alpha1.ReasonDecisionUnavailable,
 		Message:            "stale custom decision",
+		ObservedGeneration: 1,
+	})
+	// A read failure stops before a recommendation, so a ScalingLimited from
+	// an earlier sync is left alone.
+	meta.SetStatusCondition(&scaler.Status.Conditions, metav1.Condition{
+		Type:               autoscalingv1alpha1.ConditionScalingLimited,
+		Status:             metav1.ConditionTrue,
+		Reason:             autoscalingv1alpha1.ReasonTooManyReplicas,
+		Message:            "seeded limit",
 		ObservedGeneration: 1,
 	})
 
@@ -224,11 +236,10 @@ func TestTargetUnreadableRecordsAbleToScale(t *testing.T) {
 	if ready.ObservedGeneration != got.Generation {
 		t.Errorf("Ready.observedGeneration = %d, want %d", ready.ObservedGeneration, got.Generation)
 	}
-	decision := meta.FindStatusCondition(got.Status.Conditions, autoscalingv1alpha1.ConditionDecisionAvailable)
-	if decision == nil || decision.Status != metav1.ConditionFalse || decision.Reason != autoscalingv1alpha1.ReasonDecisionUnavailable ||
-		decision.Message != "stale custom decision" || decision.ObservedGeneration != 1 {
-		t.Errorf("DecisionAvailable = %+v, want the seeded condition left untouched", decision)
-	}
+	assertConditionLeft(t, got, autoscalingv1alpha1.ConditionDecisionAvailable,
+		metav1.ConditionFalse, autoscalingv1alpha1.ReasonDecisionUnavailable, "stale custom decision", 1)
+	assertConditionLeft(t, got, autoscalingv1alpha1.ConditionScalingLimited,
+		metav1.ConditionTrue, autoscalingv1alpha1.ReasonTooManyReplicas, "seeded limit", 1)
 	able := meta.FindStatusCondition(got.Status.Conditions, autoscalingv1alpha1.ConditionAbleToScale)
 	if able == nil {
 		t.Fatal("AbleToScale condition missing")
@@ -305,6 +316,9 @@ func TestMissingCustomProviderRecordsInvalidSpec(t *testing.T) {
 	}
 	if able.ObservedGeneration != got.Generation {
 		t.Errorf("AbleToScale.observedGeneration = %d, want %d", able.ObservedGeneration, got.Generation)
+	}
+	if meta.FindStatusCondition(got.Status.Conditions, autoscalingv1alpha1.ConditionScalingLimited) != nil {
+		t.Error("ScalingLimited set without a usable signal")
 	}
 	if got.Status.DesiredReplicas != 1 || got.Status.AppliedReplicas != 1 || got.Status.CurrentReplicas != 1 {
 		t.Errorf("replicas desired/applied/current = %d/%d/%d, want 1/1/1",
@@ -398,6 +412,35 @@ func TestMetricProviderSwitchOverwritesDecisionAvailable(t *testing.T) {
 	setProvider(autoscalingv1alpha1.MetricProviderCustom, decisionSrv.URL)
 	got = reconcileAndGet()
 	assertSynced(got, autoscalingv1alpha1.ReasonDecisionReceived, "decision server recommends 1 replicas")
+}
+
+// assertConditionLeft checks that a condition written by an earlier sync was
+// not replaced. observedGeneration is the seeded value, not the current one.
+func assertConditionLeft(t *testing.T, got *autoscalingv1alpha1.LLMScaler, condType string, status metav1.ConditionStatus, reason, message string, observedGeneration int64) {
+	t.Helper()
+	cond := meta.FindStatusCondition(got.Status.Conditions, condType)
+	if cond == nil || cond.Status != status || cond.Reason != reason || cond.Message != message || cond.ObservedGeneration != observedGeneration {
+		t.Errorf("%s = %+v, want the seeded condition left untouched", condType, cond)
+	}
+}
+
+// assertScalingLimited checks the limit condition written on this sync,
+// including the generation it was computed from.
+func assertScalingLimited(t *testing.T, got *autoscalingv1alpha1.LLMScaler, status metav1.ConditionStatus, reason, message string) {
+	t.Helper()
+	limited := meta.FindStatusCondition(got.Status.Conditions, autoscalingv1alpha1.ConditionScalingLimited)
+	if limited == nil {
+		t.Fatal("ScalingLimited condition missing")
+	}
+	if limited.Status != status || limited.Reason != reason {
+		t.Errorf("ScalingLimited = %s/%s, want %s/%s", limited.Status, limited.Reason, status, reason)
+	}
+	if limited.Message != message {
+		t.Errorf("ScalingLimited message = %q, want %q", limited.Message, message)
+	}
+	if limited.ObservedGeneration != got.Generation {
+		t.Errorf("ScalingLimited.observedGeneration = %d, want %d", limited.ObservedGeneration, got.Generation)
+	}
 }
 
 // assertDecisionAvailable checks the signal condition written on this sync,
