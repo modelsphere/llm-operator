@@ -17,8 +17,8 @@
     "desired": 2
     "applied": 2
     "condition":
-      "status": "False"
-      "reason": "NotDeferred"
+      "status": "True"
+      "reason": "Synced"
       "messageContains":
       - "scaled 1 -> 2"
     "ready":
@@ -46,7 +46,7 @@
       "status": "True"
       "reason": "Synced"
       "messageContains":
-      - "scale action deferred: RolloutInProgress; see ScalingDeferred"
+      - "scale action deferred: RolloutInProgress; see AbleToScale"
       "observedGenerationCurrent": true
     "lastScaleTime": "unchanged"
     "observedGenerationCurrent": true

@@ -18,5 +18,5 @@
     "applied": 5
     "deferredSince": null
     "condition":
-      "status": "False"
-      "reason": "NotDeferred"
+      "status": "True"
+      "reason": "Synced"

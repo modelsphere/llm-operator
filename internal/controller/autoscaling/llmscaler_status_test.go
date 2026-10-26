@@ -41,9 +41,10 @@ import (
 )
 
 // TestTargetWriteFailedRecordsReady covers the path envtest cannot force: the
-// target update returns an error. Ready and observedGeneration are recorded;
-// the deferral and the replica counts already in status are left alone, and
-// the original error is returned.
+// target update returns an error. AbleToScale and Ready record
+// TargetWriteFailed, and observedGeneration is recorded. The deferral and
+// the replica counts already in status are left alone, and the original
+// error is returned.
 func TestTargetWriteFailedRecordsReady(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprintf(w, `{"status":"success","data":{"result":[{"value":[0,"%s"]}]}}`, "0.85")
@@ -59,7 +60,7 @@ func TestTargetWriteFailedRecordsReady(t *testing.T) {
 		DeferredSince:   &deferred,
 	}
 	meta.SetStatusCondition(&scaler.Status.Conditions, metav1.Condition{
-		Type:               autoscalingv1alpha1.ConditionScalingDeferred,
+		Type:               autoscalingv1alpha1.ConditionAbleToScale,
 		Status:             metav1.ConditionTrue,
 		Reason:             autoscalingv1alpha1.ReasonRolloutInProgress,
 		Message:            "seeded",
@@ -124,10 +125,18 @@ func TestTargetWriteFailedRecordsReady(t *testing.T) {
 	if got.Status.DeferredSince == nil || !got.Status.DeferredSince.Time.Equal(deferred.Time) {
 		t.Errorf("deferredSince = %v, want %s", got.Status.DeferredSince, deferred.Time)
 	}
-	deferredCond := meta.FindStatusCondition(got.Status.Conditions, autoscalingv1alpha1.ConditionScalingDeferred)
-	if deferredCond == nil || deferredCond.Status != metav1.ConditionTrue ||
-		deferredCond.Reason != autoscalingv1alpha1.ReasonRolloutInProgress || deferredCond.Message != "seeded" {
-		t.Errorf("ScalingDeferred = %+v, want the seeded condition", deferredCond)
+	able := meta.FindStatusCondition(got.Status.Conditions, autoscalingv1alpha1.ConditionAbleToScale)
+	if able == nil {
+		t.Fatal("AbleToScale condition missing")
+	}
+	if able.Status != metav1.ConditionFalse || able.Reason != autoscalingv1alpha1.ReasonTargetWriteFailed {
+		t.Errorf("AbleToScale = %s/%s, want False/%s", able.Status, able.Reason, autoscalingv1alpha1.ReasonTargetWriteFailed)
+	}
+	if !strings.Contains(able.Message, "injected write failure") {
+		t.Errorf("AbleToScale message = %q, want the injected error", able.Message)
+	}
+	if able.ObservedGeneration != got.Generation {
+		t.Errorf("AbleToScale.observedGeneration = %d, want %d", able.ObservedGeneration, got.Generation)
 	}
 
 	deploy := &appsv1.Deployment{}
@@ -136,6 +145,91 @@ func TestTargetWriteFailedRecordsReady(t *testing.T) {
 	}
 	if deploy.Spec.Replicas == nil || *deploy.Spec.Replicas != 1 {
 		t.Errorf("deployment replicas = %v, want 1", deploy.Spec.Replicas)
+	}
+}
+
+// TestTargetUnreadableRecordsAbleToScale covers a target Get that fails for a
+// reason other than NotFound. AbleToScale and Ready are False with
+// TargetUnreadable. deferredSince and the replica counts stay as seeded.
+func TestTargetUnreadableRecordsAbleToScale(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprintf(w, `{"status":"success","data":{"result":[{"value":[0,"%s"]}]}}`, "0.85")
+	}))
+	defer srv.Close()
+
+	deferred := metav1.NewTime(time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC))
+	scaler := prometheusScaler(srv.URL)
+	scaler.Status = autoscalingv1alpha1.LLMScalerStatus{
+		CurrentReplicas: 4,
+		DesiredReplicas: 4,
+		AppliedReplicas: 4,
+		DeferredSince:   &deferred,
+	}
+
+	scheme := statusScheme(t)
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(rolledDeployment(), scaler).
+		WithStatusSubresource(&autoscalingv1alpha1.LLMScaler{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*unstructured.Unstructured); ok {
+					return fmt.Errorf("injected read failure")
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+
+	result, err := (&LLMScalerReconciler{Client: c, Scheme: scheme}).Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: scaler.Namespace, Name: scaler.Name},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile error = %v", err)
+	}
+	if result.RequeueAfter != 10*time.Second {
+		t.Errorf("RequeueAfter = %s, want 10s", result.RequeueAfter)
+	}
+
+	got := &autoscalingv1alpha1.LLMScaler{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(scaler), got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.ObservedGeneration != got.Generation {
+		t.Errorf("observedGeneration = %d, want generation %d", got.Status.ObservedGeneration, got.Generation)
+	}
+	ready := meta.FindStatusCondition(got.Status.Conditions, autoscalingv1alpha1.ConditionReady)
+	if ready == nil {
+		t.Fatal("Ready condition missing")
+	}
+	if ready.Status != metav1.ConditionFalse || ready.Reason != autoscalingv1alpha1.ReasonTargetUnreadable {
+		t.Errorf("Ready = %s/%s, want False/%s", ready.Status, ready.Reason, autoscalingv1alpha1.ReasonTargetUnreadable)
+	}
+	if !strings.Contains(ready.Message, "injected read failure") {
+		t.Errorf("Ready message = %q, want the injected error", ready.Message)
+	}
+	able := meta.FindStatusCondition(got.Status.Conditions, autoscalingv1alpha1.ConditionAbleToScale)
+	if able == nil {
+		t.Fatal("AbleToScale condition missing")
+	}
+	if able.Status != metav1.ConditionFalse || able.Reason != autoscalingv1alpha1.ReasonTargetUnreadable {
+		t.Errorf("AbleToScale = %s/%s, want False/%s", able.Status, able.Reason, autoscalingv1alpha1.ReasonTargetUnreadable)
+	}
+	if able.Message != ready.Message {
+		t.Errorf("AbleToScale message = %q, want Ready's %q", able.Message, ready.Message)
+	}
+	if able.ObservedGeneration != got.Generation {
+		t.Errorf("AbleToScale.observedGeneration = %d, want %d", able.ObservedGeneration, got.Generation)
+	}
+	if got.Status.CurrentReplicas != 4 || got.Status.DesiredReplicas != 4 || got.Status.AppliedReplicas != 4 {
+		t.Errorf("replicas current/desired/applied = %d/%d/%d, want 4/4/4",
+			got.Status.CurrentReplicas, got.Status.DesiredReplicas, got.Status.AppliedReplicas)
+	}
+	if got.Status.DeferredSince == nil || !got.Status.DeferredSince.Time.Equal(deferred.Time) {
+		t.Errorf("deferredSince = %v, want %s", got.Status.DeferredSince, deferred.Time)
+	}
+	if got.Status.LastScaleTime != nil {
+		t.Errorf("lastScaleTime = %s, want unset", got.Status.LastScaleTime.Time)
 	}
 }
 
@@ -179,9 +273,18 @@ func TestMissingCustomProviderRecordsInvalidSpec(t *testing.T) {
 	if meta.FindStatusCondition(got.Status.Conditions, autoscalingv1alpha1.ConditionDecisionAvailable) != nil {
 		t.Error("DecisionAvailable was set; a missing customProvider does not query")
 	}
-	deferredCond := meta.FindStatusCondition(got.Status.Conditions, autoscalingv1alpha1.ConditionScalingDeferred)
-	if deferredCond == nil || deferredCond.Status != metav1.ConditionFalse || deferredCond.Reason != autoscalingv1alpha1.ReasonNotDeferred {
-		t.Errorf("ScalingDeferred = %+v, want False/NotDeferred", deferredCond)
+	able := meta.FindStatusCondition(got.Status.Conditions, autoscalingv1alpha1.ConditionAbleToScale)
+	if able == nil {
+		t.Fatal("AbleToScale condition missing")
+	}
+	if able.Status != metav1.ConditionTrue || able.Reason != autoscalingv1alpha1.ReasonSynced {
+		t.Errorf("AbleToScale = %s/%s, want True/Synced", able.Status, able.Reason)
+	}
+	if able.Message != "replica count is already at the step target" {
+		t.Errorf("AbleToScale message = %q", able.Message)
+	}
+	if able.ObservedGeneration != got.Generation {
+		t.Errorf("AbleToScale.observedGeneration = %d, want %d", able.ObservedGeneration, got.Generation)
 	}
 	if got.Status.DesiredReplicas != 1 || got.Status.AppliedReplicas != 1 || got.Status.CurrentReplicas != 1 {
 		t.Errorf("replicas desired/applied/current = %d/%d/%d, want 1/1/1",

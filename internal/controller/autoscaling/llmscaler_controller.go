@@ -65,8 +65,9 @@ const (
 	deploymentKind = "Deployment"
 
 	// eventReasonScalingDeferred is the Normal event emitted when a scale action
-	// starts being held back, or the guard reason changes. It is not repeated on
-	// every sync.
+	// starts being held back, or the guard reason differs from the previous
+	// AbleToScale reason. A previous False, Synced, or DeferralTimedOut counts
+	// as changed. It is not repeated on every sync.
 	eventReasonScalingDeferred = "ScalingDeferred"
 	// eventReasonDeferralTimedOut is the Warning event emitted when the deferral
 	// timeout forces the write the guard was holding back.
@@ -161,10 +162,10 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	if err != nil {
 		logger.Error(err, "unable to fetch target resource", "kind", targetRef.Kind, "name", targetRef.Name)
-		// Requeue since the target might be created later. deferredSince,
-		// ScalingDeferred, and the replica counts are left as they are, so the
-		// deadline carries over once the target is readable again. Ready
-		// records why this sync could not read the target.
+		// Requeue since the target might be created later. deferredSince and
+		// the replica counts are left as they are, so the deadline carries
+		// over once the target is readable again. AbleToScale is False with
+		// the read failure, and Ready copies that reason.
 		reason, msg := targetReadFailure(err, targetRef.Kind, targetRef.Name)
 		r.recordReady(ctx, &scaler, metav1.ConditionFalse, reason, msg)
 		return ctrl.Result{RequeueAfter: retryPeriod}, nil
@@ -210,7 +211,8 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// guard still matches, and forced writes. It is cleared only when no guard
 	// matches. It lives in status, so the deadline survives an operator restart.
 	// applied is the target's spec.replicas after this sync. A failed target
-	// update records Ready and returns before replica counts are written.
+	// update records AbleToScale and Ready and returns before replica counts
+	// are written.
 	now := r.now()
 	timeout := deferTimeout(&scaler)
 	deferral := evaluateGuards(state, ScaleIntent{From: state.Spec, To: targetReplicas})
@@ -228,7 +230,7 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// Nothing is being held back. A guard that matches on a no-op does not
 		// start a deferral, and a no-op with no guard ends one.
 		r.endDeferral(req.NamespacedName, &scaler)
-		setScalingDeferredCondition(&scaler, metav1.ConditionFalse, autoscalingv1alpha1.ReasonNotDeferred,
+		setAbleToScaleCondition(&scaler, metav1.ConditionTrue, autoscalingv1alpha1.ReasonSynced,
 			"replica count is already at the step target")
 		syncedMsg = "replica count is at the step target"
 	case noop:
@@ -236,8 +238,8 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// nothing to write, so deferredSince stays and this sync is not holding
 		// a write: the next sync stays on syncPeriod.
 		logger.Info("No scale write this sync; deferral clock still running", "reason", deferral.message, "deferredSince", scaler.Status.DeferredSince.Time)
-		setScalingDeferredCondition(&scaler, metav1.ConditionTrue, deferral.reason,
-			scalingDeferredNoopMessage(deferral.message, scaler.Status.DeferredSince.Time, timeout))
+		setAbleToScaleCondition(&scaler, metav1.ConditionTrue, deferral.reason,
+			holdNoopMessage(deferral.message, scaler.Status.DeferredSince.Time, timeout))
 		syncedMsg = readyDeferredMessage(deferral.reason)
 	case guarded && !pastDeferTimeout(scaler.Status.DeferredSince, timeout, now):
 		r.holdScaleDeferred(&scaler, deferral, int32(specReplicas), targetReplicas, timeout, now)
@@ -248,12 +250,12 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	case guarded && paceRemaining > 0:
 		// Deadline passed, but this process already forced a write within the
 		// last sync period. See lastForcedWrite.
-		msg := scalingDeferredPacedMessage(int32(specReplicas), targetReplicas, deferral.message, scaler.Status.DeferredSince.Time)
+		msg := holdPacedMessage(int32(specReplicas), targetReplicas, deferral.message, scaler.Status.DeferredSince.Time)
 		logger.Info("Pacing forced scale", "reason", deferral.message, "current", specReplicas, "target", targetReplicas, "retryAfter", paceRemaining)
-		if scalingDeferredReasonChanged(&scaler, deferral.reason) {
+		if holdReasonChanged(&scaler, deferral.reason) {
 			r.event(&scaler, corev1.EventTypeNormal, eventReasonScalingDeferred, msg)
 		}
-		setScalingDeferredCondition(&scaler, metav1.ConditionTrue, deferral.reason, msg)
+		setAbleToScaleCondition(&scaler, metav1.ConditionTrue, deferral.reason, msg)
 		requeueAfter = deferralRequeueAfter(syncPeriod, true, timeout, 0, paceRemaining)
 		syncedMsg = readyDeferredMessage(deferral.reason)
 	default:
@@ -261,7 +263,7 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// target update returns before any deferral state is recorded.
 		wrote, err := r.writeScaleTarget(ctx, &scaler, targetObj, req.NamespacedName, int32(specReplicas), targetReplicas, guarded, deferral, timeout, now)
 		if err != nil {
-			r.recordTargetWriteFailure(ctx, &scaler, err, hold)
+			r.recordTargetWriteFailure(ctx, &scaler, err)
 			return ctrl.Result{}, err
 		}
 		applied = wrote
@@ -270,7 +272,7 @@ func (r *LLMScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// 4. Update Status. currentReplicas is the raw ready count, not the ratio
 	// baseline: a fully-unready fleet reports 0. A missing recommendation
-	// outranks an otherwise clean sync: Ready names that, and ScalingDeferred
+	// outranks an otherwise clean sync: Ready names that, and AbleToScale
 	// still describes the scale decision.
 	applyReady(&scaler, hold, syncedMsg)
 	scaler.Status.CurrentReplicas = int32(readyReplicas)
@@ -354,10 +356,10 @@ func (r *LLMScalerReconciler) writeScaleTarget(ctx context.Context, scaler *auto
 		// wait out the timeout again.
 		r.recordForcedWrite(key, now)
 		r.event(scaler, corev1.EventTypeWarning, eventReasonDeferralTimedOut, timedOutEvent)
-		setScalingDeferredCondition(scaler, metav1.ConditionFalse, autoscalingv1alpha1.ReasonDeferralTimedOut, timedOutEvent)
+		setAbleToScaleCondition(scaler, metav1.ConditionTrue, autoscalingv1alpha1.ReasonDeferralTimedOut, timedOutEvent)
 	} else {
 		r.endDeferral(key, scaler)
-		setScalingDeferredCondition(scaler, metav1.ConditionFalse, autoscalingv1alpha1.ReasonNotDeferred,
+		setAbleToScaleCondition(scaler, metav1.ConditionTrue, autoscalingv1alpha1.ReasonSynced,
 			scaledMessage(specReplicas, targetReplicas))
 	}
 	return targetReplicas, nil
@@ -494,29 +496,34 @@ func (r *LLMScalerReconciler) holdScaleDeferred(scaler *autoscalingv1alpha1.LLMS
 		scaler.Status.DeferredSince = &stamped
 	}
 	// Read the previous reason before overwriting the condition.
-	reasonChanged := scalingDeferredReasonChanged(scaler, deferral.reason)
-	msg := scalingDeferredMessage(specReplicas, targetReplicas, deferral.message, scaler.Status.DeferredSince.Time, timeout)
-	setScalingDeferredCondition(scaler, metav1.ConditionTrue, deferral.reason, msg)
+	reasonChanged := holdReasonChanged(scaler, deferral.reason)
+	msg := holdMessage(specReplicas, targetReplicas, deferral.message, scaler.Status.DeferredSince.Time, timeout)
+	setAbleToScaleCondition(scaler, metav1.ConditionTrue, deferral.reason, msg)
 	if entering || reasonChanged {
 		r.event(scaler, corev1.EventTypeNormal, eventReasonScalingDeferred, msg)
 	}
 }
 
-// scalingDeferredReasonChanged reports whether the ScalingDeferred condition is
-// not already True with this guard reason. The caller uses it to avoid emitting
-// the same deferral event on every sync.
-func scalingDeferredReasonChanged(scaler *autoscalingv1alpha1.LLMScaler, reason string) bool {
-	prev := meta.FindStatusCondition(scaler.Status.Conditions, autoscalingv1alpha1.ConditionScalingDeferred)
+// holdReasonChanged reports whether the Normal deferral event should fire for
+// this guard reason. It is true unless AbleToScale is already True with that
+// reason. A previous False, Synced, or DeferralTimedOut counts as changed.
+// A TargetNotFound sync sets AbleToScale False, so a returning guard emits once.
+func holdReasonChanged(scaler *autoscalingv1alpha1.LLMScaler, reason string) bool {
+	prev := meta.FindStatusCondition(scaler.Status.Conditions, autoscalingv1alpha1.ConditionAbleToScale)
 	if prev == nil || prev.Status != metav1.ConditionTrue {
+		return true
+	}
+	switch prev.Reason {
+	case autoscalingv1alpha1.ReasonSynced, autoscalingv1alpha1.ReasonDeferralTimedOut:
 		return true
 	}
 	return prev.Reason != reason
 }
 
-// scalingDeferredMessage describes the scale action being held back. "wanted"
+// holdMessage describes the scale action being held back. "wanted"
 // is the step-capped write, which is what the guard is holding, not the uncapped
 // recommendation (that stays on status.desiredReplicas).
-func scalingDeferredMessage(specReplicas, targetReplicas int32, guardMessage string, since time.Time, timeout time.Duration) string {
+func holdMessage(specReplicas, targetReplicas int32, guardMessage string, since time.Time, timeout time.Duration) string {
 	limit := "never forced (deferTimeoutSeconds is 0)"
 	if timeout > 0 {
 		limit = fmt.Sprintf("will apply after %ds", int64(timeout/time.Second))
@@ -525,10 +532,10 @@ func scalingDeferredMessage(specReplicas, targetReplicas int32, guardMessage str
 		specReplicas, targetReplicas, guardMessage, since.UTC().Format(time.RFC3339), limit)
 }
 
-// scalingDeferredNoopMessage is the condition message when a guard still
+// holdNoopMessage is the condition message when a guard still
 // matches but the step target is already spec.replicas. The clock keeps
 // running; the sync does not start or clear deferredSince.
-func scalingDeferredNoopMessage(guardMessage string, since time.Time, timeout time.Duration) string {
+func holdNoopMessage(guardMessage string, since time.Time, timeout time.Duration) string {
 	limit := "never forced (deferTimeoutSeconds is 0)"
 	if timeout > 0 {
 		limit = fmt.Sprintf("will apply after %ds", int64(timeout/time.Second))
@@ -537,16 +544,16 @@ func scalingDeferredNoopMessage(guardMessage string, since time.Time, timeout ti
 		guardMessage, since.UTC().Format(time.RFC3339), limit)
 }
 
-// scalingDeferredPacedMessage is the condition message when the deadline has
+// holdPacedMessage is the condition message when the deadline has
 // passed but another forced write must wait out the sync period.
-func scalingDeferredPacedMessage(specReplicas, targetReplicas int32, guardMessage string, since time.Time) string {
+func holdPacedMessage(specReplicas, targetReplicas int32, guardMessage string, since time.Time) string {
 	return fmt.Sprintf("holding %d replicas (wanted %d): %s; deferred since %s, forced write paced to one per sync period",
 		specReplicas, targetReplicas, guardMessage, since.UTC().Format(time.RFC3339))
 }
 
-func setScalingDeferredCondition(scaler *autoscalingv1alpha1.LLMScaler, status metav1.ConditionStatus, reason, msg string) {
+func setAbleToScaleCondition(scaler *autoscalingv1alpha1.LLMScaler, status metav1.ConditionStatus, reason, msg string) {
 	meta.SetStatusCondition(&scaler.Status.Conditions, metav1.Condition{
-		Type:               autoscalingv1alpha1.ConditionScalingDeferred,
+		Type:               autoscalingv1alpha1.ConditionAbleToScale,
 		Status:             status,
 		Reason:             reason,
 		Message:            msg,
@@ -565,28 +572,37 @@ func setReadyCondition(scaler *autoscalingv1alpha1.LLMScaler, status metav1.Cond
 }
 
 // syncHold is why this sync has no usable recommendation. A zero reason means
-// a metric or a decision produced one. Precedence when several failures apply
-// is decided by the caller: InvalidSpec, then a target read or write failure,
-// then a missing signal, then Synced.
+// a metric or a decision produced one. Ready applies it only when AbleToScale
+// is not already False: a failed target read or write outranks a missing signal.
 type syncHold struct {
 	reason  string
 	message string
 }
 
 // readyDeferredMessage is the Ready summary while a guard holds the write.
-// The guard reason and the clock stay on ScalingDeferred.
+// The guard reason and the clock stay on AbleToScale.
 func readyDeferredMessage(reason string) string {
-	return fmt.Sprintf("scale action deferred: %s; see ScalingDeferred", reason)
+	return fmt.Sprintf("scale action deferred: %s; see AbleToScale", reason)
 }
 
-// scaledMessage is the Ready and ScalingDeferred text for a normal write.
+// scaledMessage is the Ready and AbleToScale text for a normal write.
 func scaledMessage(from, to int32) string {
 	return fmt.Sprintf("scaled %d -> %d", from, to)
 }
 
-// applyReady sets Ready for a sync that reached a scale decision. A hold
-// (invalid spec, no decision, no metric) outranks an otherwise clean sync.
+// applyReady sets Ready for a sync that reached a scale decision, or copies
+// it from AbleToScale when that condition is False.
+//
+// Precedence: AbleToScale False (InvalidSpec for an unparseable apiVersion,
+// TargetNotFound, TargetUnreadable, TargetWriteFailed), then InvalidSpec when
+// metricProvider is Custom without customProvider, then DecisionUnavailable
+// or MetricsUnavailable, then Synced. A guard hold stays on the Synced branch;
+// its message points at AbleToScale.
 func applyReady(scaler *autoscalingv1alpha1.LLMScaler, hold syncHold, syncedMsg string) {
+	if able := meta.FindStatusCondition(scaler.Status.Conditions, autoscalingv1alpha1.ConditionAbleToScale); able != nil && able.Status == metav1.ConditionFalse {
+		setReadyCondition(scaler, metav1.ConditionFalse, able.Reason, able.Message)
+		return
+	}
 	if hold.reason != "" {
 		setReadyCondition(scaler, metav1.ConditionFalse, hold.reason, hold.message)
 		return
@@ -602,29 +618,29 @@ func targetReadFailure(err error, kind, name string) (string, string) {
 	return autoscalingv1alpha1.ReasonTargetUnreadable, fmt.Sprintf("could not get target %s %q: %s", kind, name, err.Error())
 }
 
-// recordReady sets Ready and observedGeneration, then writes status. Replica
-// counts, deferredSince, and ScalingDeferred are left as they stand. A
-// status-write error is logged; the caller keeps its original result.
+// recordReady sets AbleToScale and derives Ready from it, then writes status.
+// Callers use it when the sync stops before a scale decision: an unparseable
+// apiVersion, or a target Get that failed. Replica counts and deferredSince
+// are left as they stand. A status-write error is logged; the caller keeps
+// its original result.
 func (r *LLMScalerReconciler) recordReady(ctx context.Context, scaler *autoscalingv1alpha1.LLMScaler, status metav1.ConditionStatus, reason, msg string) {
 	logger := logf.FromContext(ctx)
-	setReadyCondition(scaler, status, reason, msg)
+	setAbleToScaleCondition(scaler, status, reason, msg)
+	applyReady(scaler, syncHold{}, "")
 	scaler.Status.ObservedGeneration = scaler.Generation
 	if err := r.Status().Update(ctx, scaler); err != nil {
 		logger.Error(err, "failed to update scaler status")
 	}
 }
 
-// recordTargetWriteFailure records Ready after spec.replicas could not be
-// written. InvalidSpec outranks the write failure; a missing metric or
-// decision does not. The status write is best-effort.
-func (r *LLMScalerReconciler) recordTargetWriteFailure(ctx context.Context, scaler *autoscalingv1alpha1.LLMScaler, writeErr error, hold syncHold) {
-	reason := autoscalingv1alpha1.ReasonTargetWriteFailed
-	msg := fmt.Sprintf("could not write spec.replicas: %s", writeErr.Error())
-	if hold.reason == autoscalingv1alpha1.ReasonInvalidSpec {
-		reason = hold.reason
-		msg = hold.message
-	}
-	r.recordReady(ctx, scaler, metav1.ConditionFalse, reason, msg)
+// recordTargetWriteFailure records AbleToScale False with TargetWriteFailed
+// after spec.replicas could not be written. Ready copies that reason. A
+// missing customProvider does not outrank the failed write. deferredSince
+// and the replica counts are left as they stand. The status write is
+// best-effort.
+func (r *LLMScalerReconciler) recordTargetWriteFailure(ctx context.Context, scaler *autoscalingv1alpha1.LLMScaler, writeErr error) {
+	r.recordReady(ctx, scaler, metav1.ConditionFalse, autoscalingv1alpha1.ReasonTargetWriteFailed,
+		fmt.Sprintf("could not write spec.replicas: %s", writeErr.Error()))
 }
 
 func (r *LLMScalerReconciler) event(obj client.Object, eventType, reason, msg string) {

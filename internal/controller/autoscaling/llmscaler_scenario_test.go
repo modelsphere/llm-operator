@@ -647,7 +647,7 @@ func assertScalerStatus(run *scenarioRun, step scenarioStep, prevLastScale *meta
 	}
 	assertDeferredSince(scaler, exp.deferredSince, run.seed)
 	if exp.condition != nil {
-		assertCondition(scaler, autoscalingv1alpha1.ConditionScalingDeferred, *exp.condition)
+		assertCondition(scaler, autoscalingv1alpha1.ConditionAbleToScale, *exp.condition)
 	}
 	if exp.ready != nil {
 		assertCondition(scaler, autoscalingv1alpha1.ConditionReady, *exp.ready)

@@ -34,7 +34,7 @@
     "deferredSince": "0s"
     "applied": 1
     "condition":
-      "status": "False"
+      "status": "True"
       "reason": "DeferralTimedOut"
       "messageContains":
       - "scaling 3 -> 1 anyway"

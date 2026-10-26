@@ -40,7 +40,7 @@
     "applied": 3
     "current": 0
     "condition":
-      "status": "False"
+      "status": "True"
       "reason": "DeferralTimedOut"
       "messageContains":
       - "scaling 5 -> 3 anyway"

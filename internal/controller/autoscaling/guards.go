@@ -110,9 +110,9 @@ type ScaleIntent struct {
 
 // Guard decides whether a scale write must wait.
 // The first entry in guards whose Hold reports held supplies the
-// ScalingDeferred reason and message.
+// AbleToScale reason and message.
 type Guard interface {
-	// Reason is the ScalingDeferred condition reason used when Hold reports
+	// Reason is the AbleToScale condition reason used when Hold reports
 	// the guard is active.
 	Reason() string
 	// Hold reports whether this guard is holding the write back.
@@ -132,7 +132,7 @@ var guards = []Guard{rolloutGuard{}, settleGuard{}}
 // and on a no-op. Other kinds never hold.
 type rolloutGuard struct{}
 
-// Reason is the ScalingDeferred condition reason for an in-progress rollout.
+// Reason is the AbleToScale condition reason for an in-progress rollout.
 func (rolloutGuard) Reason() string { return autoscalingv1alpha1.ReasonRolloutInProgress }
 
 // Hold reports whether a Deployment rollout is in progress.
@@ -183,7 +183,7 @@ var checkTerminatingReplicas = false
 // check degrades to the readyReplicas condition alone even when gated on.
 type settleGuard struct{}
 
-// Reason is the ScalingDeferred condition reason for a scale-down that has
+// Reason is the AbleToScale condition reason for a scale-down that has
 // not settled.
 func (settleGuard) Reason() string { return autoscalingv1alpha1.ReasonScaleDownSettling }
 
@@ -209,7 +209,7 @@ func (settleGuard) Hold(s WorkloadState, in ScaleIntent) (bool, string) {
 // directions, and the settle guard holds scale-down until the raw ready count
 // is back at spec.
 type scaleDeferral struct {
-	// reason is the ScalingDeferred condition reason (RolloutInProgress or
+	// reason is the AbleToScale condition reason (RolloutInProgress or
 	// ScaleDownSettling), or "" when nothing defers.
 	reason string
 	// message is the human description of the guard, for the log and the condition.

@@ -35,9 +35,14 @@ spec:
       jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
-    - description: Whether a scale action is currently deferred
-      jsonPath: .status.conditions[?(@.type=="ScalingDeferred")].status
-      name: Deferred
+    - description: Whether this sync could scale the target
+      jsonPath: .status.conditions[?(@.type=="AbleToScale")].status
+      name: AbleToScale
+      type: string
+    - description: 'Why the scaler is or is not scaling: Synced, a hold reason, DeferralTimedOut,
+        or a failure'
+      jsonPath: .status.conditions[?(@.type=="AbleToScale")].reason
+      name: Scaling
       type: string
     name: v1alpha1
     schema:

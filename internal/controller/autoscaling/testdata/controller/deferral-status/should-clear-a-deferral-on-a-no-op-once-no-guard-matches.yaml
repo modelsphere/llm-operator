@@ -19,7 +19,7 @@
     "applied": 1
     "forcedWrite": false
     "condition":
-      "status": "False"
-      "reason": "NotDeferred"
+      "status": "True"
+      "reason": "Synced"
       "messageContains":
       - "already at the step target"

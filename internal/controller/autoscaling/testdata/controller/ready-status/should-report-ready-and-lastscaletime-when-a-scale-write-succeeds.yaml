@@ -13,8 +13,8 @@
     "current": 1
     "requeueAfter": "15s"
     "condition":
-      "status": "False"
-      "reason": "NotDeferred"
+      "status": "True"
+      "reason": "Synced"
       "messageContains":
       - "scaled 1 -> 2"
       "observedGenerationCurrent": true

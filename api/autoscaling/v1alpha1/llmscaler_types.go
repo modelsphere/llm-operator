@@ -55,59 +55,71 @@ const (
 	// replicas instead.
 	ConditionDecisionAvailable = "DecisionAvailable"
 
-	// ConditionScalingDeferred is true while a rollout or settle guard is holding
-	// a scale action back, including a no-op sync whose deferral clock is still
-	// running. It is false when this sync wrote (a normal write or one forced
-	// after the timeout) or when nothing is deferred.
-	ConditionScalingDeferred = "ScalingDeferred"
+	// ConditionAbleToScale reports whether this sync could scale the target.
+	// True is the normal state. It stays True while a rollout or settle guard
+	// holds the write, and when the deferral timeout forces that write. The
+	// reason then names the guard (RolloutInProgress, ScaleDownSettling) or
+	// DeferralTimedOut, or Synced when no guard holds. False means this sync
+	// could not scale: targetRef.apiVersion does not parse (InvalidSpec), the
+	// target could not be read (TargetNotFound, TargetUnreadable), or the
+	// replica write failed (TargetWriteFailed).
+	ConditionAbleToScale = "AbleToScale"
 
 	// ConditionReady is the summary of the last sync, and the condition to
 	// watch. It is True when the sync completed cleanly: the controller wrote
 	// spec.replicas, the replica count was already at the step target, or a
 	// guard is holding the write. It is False when the sync could not do its
-	// job. ScalingDeferred False with NotDeferred is healthy, not a failure;
-	// the detail of a hold stays on ScalingDeferred.
+	// job. When AbleToScale is False, Ready is False with AbleToScale's
+	// reason. A Custom scaler with no customProvider, a missing decision, and
+	// an unevaluable metric are False on Ready while AbleToScale still
+	// describes the scale decision. A guard hold is not a failure: read Ready
+	// for overall health and AbleToScale for why a write is or is not happening.
 	ConditionReady = "Ready"
 
 	ReasonDecisionReceived    = "DecisionReceived"
 	ReasonDecisionUnavailable = "DecisionUnavailable"
 
 	// ReasonRolloutInProgress means a Deployment rollout is in progress, so the
-	// scale action is held in both directions.
+	// scale action is held in both directions. AbleToScale is True with this
+	// reason: the target can be scaled, and the guard is holding the write.
 	ReasonRolloutInProgress = "RolloutInProgress"
 	// ReasonScaleDownSettling means a scale-down is waiting for the target to
-	// finish absorbing the previous replica count.
+	// finish absorbing the previous replica count. AbleToScale is True with
+	// this reason.
 	ReasonScaleDownSettling = "ScaleDownSettling"
 	// ReasonDeferralTimedOut means the scale action was held longer than
 	// spec.deferTimeoutSeconds and was applied anyway. The value matches the
-	// DeferralTimedOut event. The deferral clock keeps running when the guard
-	// still matches.
+	// DeferralTimedOut event. AbleToScale is True with this reason. The
+	// deferral clock keeps running when the guard still matches.
 	ReasonDeferralTimedOut = "DeferralTimedOut"
-	// ReasonNotDeferred means this sync found no guard matching: it wrote, or
-	// it was a no-op that did not have a deferral in progress. A no-op does not
-	// start a deferral, and a no-op while a guard still matches is not this
-	// reason when deferredSince is already set.
-	ReasonNotDeferred = "NotDeferred"
 
 	// ReasonSynced means the last sync completed cleanly. It is the reason on
 	// ConditionReady when the controller wrote, had nothing to write, or a
 	// guard is holding the write. The message says which, and a deferral
-	// points at ScalingDeferred for the detail.
+	// points at AbleToScale for the detail. It is also the AbleToScale reason
+	// when no guard holds: a normal write, or a no-op with no deferral
+	// running. deferredSince is cleared in that case.
 	ReasonSynced = "Synced"
 	// ReasonMetricsUnavailable means the Prometheus provider could not evaluate
-	// any metric this sync, so the replica count was held.
+	// any metric this sync, so the replica count was held. Ready is False with
+	// this reason. AbleToScale still describes the scale decision.
 	ReasonMetricsUnavailable = "MetricsUnavailable"
-	// ReasonInvalidSpec means the scaler cannot be reconciled as written:
-	// targetRef.apiVersion does not parse, or metricProvider is Custom and
-	// customProvider is not set.
+	// ReasonInvalidSpec means the scaler cannot be reconciled as written.
+	// On AbleToScale it means targetRef.apiVersion does not parse. On Ready it
+	// is that, or metricProvider is Custom and customProvider is not set (in
+	// which case AbleToScale still describes the scale decision).
 	ReasonInvalidSpec = "InvalidSpec"
 	// ReasonTargetNotFound means getting the scale target returned NotFound.
+	// AbleToScale and Ready are both False. deferredSince and the replica
+	// counts are left as they are.
 	ReasonTargetNotFound = "TargetNotFound"
 	// ReasonTargetUnreadable means getting the scale target failed for a
-	// reason other than NotFound.
+	// reason other than NotFound. AbleToScale and Ready are both False.
+	// deferredSince and the replica counts are left as they are.
 	ReasonTargetUnreadable = "TargetUnreadable"
 	// ReasonTargetWriteFailed means setting or updating spec.replicas on the
-	// scale target failed.
+	// scale target failed. AbleToScale and Ready are both False. deferredSince
+	// and the replica counts are left as they are.
 	ReasonTargetWriteFailed = "TargetWriteFailed"
 )
 
@@ -378,7 +390,8 @@ type LLMScalerStatus struct {
 // +kubebuilder:printcolumn:name="CurrentReplicas",type="integer",JSONPath=".status.currentReplicas",description="The current number of replicas"
 // +kubebuilder:printcolumn:name="DesiredReplicas",type="integer",JSONPath=".status.desiredReplicas",description="The desired number of replicas"
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type==\"Ready\")].status",description="Whether the last sync completed cleanly"
-// +kubebuilder:printcolumn:name="Deferred",type="string",JSONPath=".status.conditions[?(@.type==\"ScalingDeferred\")].status",description="Whether a scale action is currently deferred"
+// +kubebuilder:printcolumn:name="AbleToScale",type="string",JSONPath=".status.conditions[?(@.type==\"AbleToScale\")].status",description="Whether this sync could scale the target"
+// +kubebuilder:printcolumn:name="Scaling",type="string",JSONPath=".status.conditions[?(@.type==\"AbleToScale\")].reason",description="Why the scaler is or is not scaling: Synced, a hold reason, DeferralTimedOut, or a failure"
 
 // LLMScaler is the Schema for the llmscalers API
 type LLMScaler struct {

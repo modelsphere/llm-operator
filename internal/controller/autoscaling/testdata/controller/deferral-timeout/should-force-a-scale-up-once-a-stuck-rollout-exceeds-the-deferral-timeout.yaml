@@ -31,7 +31,7 @@
       "status": "True"
       "reason": "Synced"
       "messageContains":
-      - "scale action deferred: RolloutInProgress; see ScalingDeferred"
+      - "scale action deferred: RolloutInProgress; see AbleToScale"
       "observedGenerationCurrent": true
     "lastScaleTime": "unset"
     "observedGenerationCurrent": true
@@ -50,7 +50,7 @@
     "applied": 2
     "requeueAfter": "15s"
     "condition":
-      "status": "False"
+      "status": "True"
       "reason": "DeferralTimedOut"
       "messageContains":
       - "scaling 1 -> 2 anyway"

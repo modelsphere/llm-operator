@@ -1,6 +1,6 @@
 # The first sync defers a scale-up (wanted 2) while the deployment rolls out.
-# Deleting the target must record Ready without clearing that deferral or the
-# replica counts already written.
+# Deleting the target records TargetNotFound on AbleToScale and Ready without
+# clearing deferredSince or the replica counts already written.
 "name": "should-report-target-not-found-and-leave-the-deferral-untouched"
 "description": "should report TargetNotFound and leave the deferral untouched"
 "inputs":
@@ -31,7 +31,7 @@
       "status": "True"
       "reason": "Synced"
       "messageContains":
-      - "scale action deferred: RolloutInProgress; see ScalingDeferred"
+      - "scale action deferred: RolloutInProgress; see AbleToScale"
       "observedGenerationCurrent": true
     "lastScaleTime": "unset"
     "observedGenerationCurrent": true
@@ -41,12 +41,11 @@
     "deferredSince": "0s"
     "requeueAfter": "10s"
     "condition":
-      "status": "True"
-      "reason": "RolloutInProgress"
+      "status": "False"
+      "reason": "TargetNotFound"
       "messageContains":
-      - "holding 1 replicas (wanted 2)"
-      - "Deployment rollout in progress"
-      - "will apply after 600s"
+      - "not found"
+      "observedGenerationCurrent": true
     "ready":
       "status": "False"
       "reason": "TargetNotFound"

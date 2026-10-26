@@ -15,8 +15,8 @@
     "deferredSince": null
     "requeueAfter": "15s"
     "condition":
-      "status": "False"
-      "reason": "NotDeferred"
+      "status": "True"
+      "reason": "Synced"
       "messageContains":
       - "already at the step target"
       "observedGenerationCurrent": true

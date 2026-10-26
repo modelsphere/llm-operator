@@ -15,7 +15,7 @@
     "deferredSince": "seed"
     "applied": 2
     "condition":
-      "status": "False"
+      "status": "True"
       "reason": "DeferralTimedOut"
     "events":
     - "prefix": "Warning DeferralTimedOut"

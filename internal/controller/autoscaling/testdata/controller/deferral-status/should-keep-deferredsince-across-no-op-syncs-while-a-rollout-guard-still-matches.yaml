@@ -26,8 +26,8 @@
   - "deferredSince": null
     "replicas": 1
     "condition":
-      "status": "False"
-      "reason": "NotDeferred"
+      "status": "True"
+      "reason": "Synced"
   - "deferredSince": "10s"
     "replicas": 1
     "condition":
@@ -58,7 +58,7 @@
   - "replicas": 2
     "deferredSince": "10s"
     "condition":
-      "status": "False"
+      "status": "True"
       "reason": "DeferralTimedOut"
       "messageContains":
       - "scaling 1 -> 2 anyway"

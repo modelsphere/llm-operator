@@ -27,7 +27,7 @@
     "deferredSince": null
     "forcedWrite": false
     "condition":
-      "status": "False"
-      "reason": "NotDeferred"
+      "status": "True"
+      "reason": "Synced"
       "messageContains":
       - "scaled 3 -> 1"

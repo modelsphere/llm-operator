@@ -82,43 +82,51 @@ Only read when `metricProvider: Custom`.
 | `deferredSince` | metav1.Time | When the current deferral started. Set on the first sync that holds a scale action back. Kept across guard reason changes, no-op syncs while a guard still matches, and forced writes. Cleared only when a sync finds no guard matching (a normal write, or a no-op with no guard). A no-op does not start it. Stored in status so it survives an operator restart. |
 | `observedGeneration` | int64 | `metadata.generation` at the last status write. |
 | `lastScaleTime` | metav1.Time | When the controller last successfully wrote `spec.replicas` on the target. Set on a normal write and on a write forced after the deferral timeout. Left unchanged on a no-op, a deferral, pacing, or an error. |
-| `conditions` | []metav1.Condition | `Ready`, `DecisionAvailable`, and `ScalingDeferred`. See [Conditions](#conditions). |
+| `conditions` | []metav1.Condition | `Ready`, `DecisionAvailable`, and `AbleToScale`. See [Conditions](#conditions). |
 
-`kubectl get llmscalers` prints `MinReplicas`, `MaxReplicas`, `CurrentReplicas`, `DesiredReplicas`, `Ready` (the `Ready` condition status), `Deferred` (the `ScalingDeferred` condition status).
+`kubectl get llmscalers` prints `MinReplicas`, `MaxReplicas`, `CurrentReplicas`, `DesiredReplicas`, `Ready` (the `Ready` condition status), `AbleToScale` (the `AbleToScale` condition status), and `Scaling` (the `AbleToScale` condition reason).
 
 ### Conditions
 
-Read `Ready` for overall health. `DecisionAvailable` and `ScalingDeferred` carry detail. Polarity differs: `ScalingDeferred=True` is the held case, and `False` (`NotDeferred`) is the normal state, not a failure. Every condition carries the `metadata.generation` it was computed from as its `observedGeneration`. A sync that stops early updates `Ready` only and leaves the other two as they were.
+Read `Ready` for overall health. `AbleToScale=True` is the normal state, including while a guard holds the write. `DecisionAvailable` and `AbleToScale` carry detail. Every condition carries the `metadata.generation` it was computed from as its `observedGeneration`. `AbleToScale` replaces the earlier `ScalingDeferred` condition (polarity inverted; `NotDeferred` became `Synced`).
 
 | Type | Status | Reason | Set when |
 | --- | --- | --- | --- |
-| `Ready` | `True` | `Synced` | The sync reached a scale decision and none of the failures below applies. That covers a write (`scaled 3 -> 5`), a no-op (`replica count is at the step target`), and a guard holding the write, paced forced writes included (`scale action deferred: <reason>; see ScalingDeferred`). |
-| `Ready` | `False` | `InvalidSpec` | `targetRef.apiVersion` does not parse: the sync stops, and only `Ready` and `observedGeneration` are written. Also set when `metricProvider` is `Custom` with no `customProvider` (the replica count is held). |
-| `Ready` | `False` | `TargetNotFound` | Getting the target returned NotFound. The sync stops. Only `Ready` and `observedGeneration` are written, and the sync is retried after `retryPeriodSeconds`. |
-| `Ready` | `False` | `TargetUnreadable` | Getting the target failed for another reason. Handled like `TargetNotFound`. |
-| `Ready` | `False` | `TargetWriteFailed` | Writing `spec.replicas` on the target failed. Only `Ready` and `observedGeneration` are written (best effort). The error is returned, so the sync is retried with backoff. |
-| `Ready` | `False` | `DecisionUnavailable` | Custom provider, no decision this sync. Same message as `DecisionAvailable`. The replica count is held. |
-| `Ready` | `False` | `MetricsUnavailable` | Prometheus provider, and no metric could be evaluated (query error, no data, NaN/Inf, or an invalid target). The replica count is held. The message includes the last error. |
+| `Ready` | `True` | `Synced` | `AbleToScale` is not `False` and none of the failures below applies. A write (`scaled 3 -> 5`), a no-op (`replica count is at the step target`), a guard holding the write, paced forced writes included (`scale action deferred: <reason>; see AbleToScale`), and a write forced after the timeout (still `scaled X -> Y`). |
+| `Ready` | `False` | `InvalidSpec` | `AbleToScale` is `False` because `targetRef.apiVersion` does not parse: same message, the sync stops. Also set, with `AbleToScale` still describing the scale decision, when `metricProvider` is `Custom` and `customProvider` is not set (`spec.customProvider is not set`); the replica count is held. |
+| `Ready` | `False` | `TargetNotFound` | `AbleToScale` is `False` for the same reason. Getting the target returned NotFound. `deferredSince` and the replica counts are left as they are. Retried after `retryPeriodSeconds`. |
+| `Ready` | `False` | `TargetUnreadable` | `AbleToScale` is `False` for the same reason. Getting the target failed for another reason. Handled like `TargetNotFound`. |
+| `Ready` | `False` | `TargetWriteFailed` | `AbleToScale` is `False` for the same reason. Writing `spec.replicas` failed (`could not write spec.replicas: ...`). `deferredSince` and the replica counts are left as they are. The error is returned, so the sync is retried with backoff. A missing `customProvider` does not outrank this. |
+| `Ready` | `False` | `DecisionUnavailable` | Custom provider, and `DecisionAvailable` is `False` this sync. Same message as `DecisionAvailable`. The replica count is held. `AbleToScale` still describes the scale decision. |
+| `Ready` | `False` | `MetricsUnavailable` | Prometheus provider, and no metric could be evaluated (query error, no data, NaN/Inf, or an invalid target). The replica count is held. The message includes the last error. `AbleToScale` still describes the scale decision. |
 | `DecisionAvailable` | `True` | `DecisionReceived` | Custom provider: a decision was read this sync. Message: `decision server recommends N replicas`. |
 | `DecisionAvailable` | `False` | `DecisionUnavailable` | Custom provider: the request failed or the reply could not be used (see [Custom metric provider](#custom-metric-provider)). The error is the message. |
-| `ScalingDeferred` | `True` | `RolloutInProgress` | A `Deployment` target is mid-rollout: `observedGeneration < generation`, `updatedReplicas < spec.replicas`, or `replicas > updatedReplicas`. Holds scale-up, scale-down, and a no-op while a deferral is running. Checked first. |
-| `ScalingDeferred` | `True` | `ScaleDownSettling` | A scale-down while `readyReplicas != spec.replicas`, or, when the terminating check is on (off by default), `terminatingReplicas > 0`. |
-| `ScalingDeferred` | `False` | `DeferralTimedOut` | A guard still matched and `deferTimeoutSeconds` has elapsed since `deferredSince`, so the held write was applied anyway. `deferredSince` is kept. |
-| `ScalingDeferred` | `False` | `NotDeferred` | No guard matched and the sync wrote (`scaled X -> Y`), or the sync was a no-op with no deferral running. `deferredSince` is cleared. |
+| `AbleToScale` | `True` | `Synced` | No guard holds. A normal write (`scaled X -> Y`), or a no-op with no deferral running (`replica count is already at the step target`). `deferredSince` is cleared. |
+| `AbleToScale` | `True` | `RolloutInProgress` | A guard holds the write and this one matched first. A `Deployment` is mid-rollout: `observedGeneration < generation`, `updatedReplicas < spec.replicas`, or `replicas > updatedReplicas`. Covers the deferring case, a no-op while a deferral is already running, and forced-write pacing. |
+| `AbleToScale` | `True` | `ScaleDownSettling` | A guard holds the write and the rollout guard did not. A scale-down while `readyReplicas != spec.replicas`, or, when the terminating check is on (off by default), `terminatingReplicas > 0`. Same three hold cases as `RolloutInProgress`. |
+| `AbleToScale` | `True` | `DeferralTimedOut` | A guard still matched and `deferTimeoutSeconds` has elapsed since `deferredSince`, so the held write was applied. Same message as the Warning event. `deferredSince` is kept. |
+| `AbleToScale` | `False` | `InvalidSpec` | `targetRef.apiVersion` does not parse. The sync stops. Message: `targetRef.apiVersion "<value>" does not parse: ...`. |
+| `AbleToScale` | `False` | `TargetNotFound` | Getting the target returned NotFound. `deferredSince` and the replica counts stay untouched. |
+| `AbleToScale` | `False` | `TargetUnreadable` | Getting the target failed for another reason. `deferredSince` and the replica counts stay untouched. |
+| `AbleToScale` | `False` | `TargetWriteFailed` | Updating `spec.replicas` on the target failed. `deferredSince` and the replica counts stay untouched. |
 
-- `Ready` precedence when several apply: `InvalidSpec`, then `TargetNotFound`/`TargetUnreadable`, then `TargetWriteFailed`, then `DecisionUnavailable`/`MetricsUnavailable`, then `Synced`. A held replica count from a missing decision or metric outranks a clean write or deferral.
+- `Ready` precedence when several apply: if `AbleToScale` is `False`, Ready is `False` with that reason (`InvalidSpec`, `TargetNotFound`, `TargetUnreadable`, or `TargetWriteFailed`). Otherwise `InvalidSpec` when `metricProvider` is `Custom` without `customProvider` (`AbleToScale` still describes the scale decision for that sync). Otherwise `DecisionUnavailable` when `DecisionAvailable` is `False` this sync, or `MetricsUnavailable` when the Prometheus provider has no evaluable metric. Otherwise `Synced`. A held replica count from a missing decision or metric outranks a clean write or deferral. A failed target write outranks a missing `customProvider`.
 - `DecisionAvailable` is set only under the Custom provider with `customProvider` present. It is never set under Prometheus, and it is not removed if the provider is switched away from Custom.
-- `ScalingDeferred` is set on every sync that reaches a scale decision. Syncs that stop at the target read or fail the target write leave it unchanged.
+- `AbleToScale` is set on every sync that reaches a scale decision, and on a sync that stops because `targetRef.apiVersion` does not parse, the target cannot be read, or the target update fails. An unparseable apiVersion or a failed read leaves `DecisionAvailable`, `deferredSince`, and the replica counts unchanged. A failed write leaves `deferredSince` and the replica counts unchanged.
 
-#### `ScalingDeferred` details
+#### `AbleToScale` details
 
-A no-op while a guard still matches leaves `deferredSince` unchanged. If it is set, the condition stays `True` with that guard's reason and a message that nothing needs writing this sync, the guard is still active, and the deferral clock keeps running. If it is nil, the condition is `False`/`NotDeferred`: a no-op does not start a deferral.
+A no-op while a guard still matches leaves `deferredSince` unchanged. If it is set, the condition stays `True` with that guard's reason and a message that nothing needs writing this sync, the guard is still active, and the deferral clock keeps running. If it is nil, the condition is `True`/`Synced` (`replica count is already at the step target`): a no-op does not start a deferral.
+
+While a guard is holding a write that has not yet reached `deferTimeoutSeconds`, the condition is `True` with that guard's reason. The message is `holding N replicas (wanted M): <guard>; deferred since <time>, will apply after Ns`, or `never forced (deferTimeoutSeconds is 0)` when the timeout is 0.
 
 When the deadline has passed but a forced write already happened within the last sync period, the condition is `True` with the current guard reason and the message notes that the forced write is paced to one per sync period.
 
+When the timeout forces the write, the condition is `True`/`DeferralTimedOut` with the same message as the Warning event, and `Ready` is `True`/`Synced` with `scaled X -> Y`.
+
 Events, both on the `LLMScaler`:
 
-- **Normal `ScalingDeferred`** when a deferral starts, and again if the guard reason changes (rollout to settling is still one deferral, so `deferredSince` does not move). Not emitted on every sync, and not restarted by a forced write or by a no-op.
+- **Normal `ScalingDeferred`** when a deferral starts, and again if the guard reason differs from the previous `AbleToScale` reason (a previous `False`, `Synced`, or `DeferralTimedOut` counts as changed). Rollout to settling is still one deferral, so `deferredSince` does not move. Not emitted on every sync, and not emitted by the forced write itself or by a no-op. After a `TargetNotFound` sync, a returning guard emits once.
 - **Warning `DeferralTimedOut`** when the timeout forces the write. The message names the guard reason, how long the action was deferred, and the `from -> to` replica change. The write is the one the guard held back, still capped by `maxStepReplicas`. `deferredSince` is kept when the guard still matches, so the next stuck step does not wait out the timeout again. While the guard still matches, forced writes are paced to one per sync period.
 
 ### Example

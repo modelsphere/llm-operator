@@ -52,7 +52,7 @@
       "reason": "Synced"
       "messageContains":
       - "scale action deferred:"
-      - "see ScalingDeferred"
+      - "see AbleToScale"
       "observedGenerationCurrent": true
     "lastScaleTime": "unchanged"
   - "replicas": 3
