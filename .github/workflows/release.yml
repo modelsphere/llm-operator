@@ -80,9 +80,6 @@ jobs:
             echo "charts=oci://ghcr.io/$owner/charts"
           } >>"$GITHUB_OUTPUT"
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4.4.0
-
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4.4.1
 

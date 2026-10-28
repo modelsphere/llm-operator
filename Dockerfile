@@ -5,13 +5,14 @@
 # those registries are unreachable.
 ARG GO_IMAGE=golang:1.26
 ARG RUNTIME_IMAGE=gcr.io/distroless/static:nonroot
-FROM ${GO_IMAGE} AS builder
+# Multi-arch: Go cross-compiles, so the build stage runs on the builder's own
+# platform and only the runtime stage is per-target -- no emulation needed.
+FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS builder
 # TARGETOS/TARGETARCH are filled in by BuildKit. The classic builder does not
 # set them, and an unset one aborts the RUN below under `set -u` -- hence the
 # `:-` defaults there. An empty GOARCH is the intended fallback, not a bug: go
 # then builds for the host, which is what a non-buildx build wants anyway.
-ARG TARGETOS
-ARG TARGETARCH
+ARG TARGETOS TARGETARCH
 # Module proxy. The default is the public one; pass a mirror where
 # proxy.golang.org is unreachable. GOSUMDB is off so a build that cannot reach
 # sum.golang.org still works (go.sum is committed), and GOTOOLCHAIN=local keeps
@@ -30,10 +31,8 @@ WORKDIR /workspace
 COPY . .
 
 # Build
-# the GOARCH has no default value to allow the binary to be built according to the host where the command
-# was called. For example, if we call make docker-build in a local env which has the Apple Silicon M1 SO
-# the docker BUILDPLATFORM arg will be linux/arm64 when for Apple x86 it will be linux/amd64. Therefore,
-# by leaving it empty we can ensure that the container and binary shipped on it will have the same platform.
+# GOOS/GOARCH come from the target platform, so the binary matches the runtime
+# stage even though this stage runs natively on the build platform.
 RUN set -eu; \
     mod="${GO_MOD_MODE}"; \
     if [ "${mod}" = "auto" ]; then \
@@ -41,7 +40,7 @@ RUN set -eu; \
     fi; \
     echo "building with -mod=${mod}"; \
     if [ "${mod}" != "vendor" ]; then go mod download; fi; \
-    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-} \
+    CGO_ENABLED=0 GOOS="${TARGETOS:-linux}" GOARCH="${TARGETARCH:-}" \
         go build -mod="${mod}" -a -o manager cmd/main.go
 
 # Use distroless as minimal base image to package the manager binary
