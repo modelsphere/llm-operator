@@ -75,7 +75,10 @@ type Credentials struct {
 // ApplyOpts controls one install or upgrade.
 type ApplyOpts struct {
 	ForceConflicts bool
-	Credentials    *Credentials
+	// SkipSchemaValidation leaves the values unchecked against the chart's
+	// values.schema.json.
+	SkipSchemaValidation bool
+	Credentials          *Credentials
 	// Labels are stored on the release by Install and Upgrade.
 	Labels map[string]string
 }
@@ -180,6 +183,7 @@ func (c *Client) Install(ctx context.Context, ns, releaseName string, ch ChartRe
 	inst.Namespace = ns
 	inst.ServerSideApply = true
 	inst.ForceConflicts = opts.ForceConflicts
+	inst.SkipSchemaValidation = opts.SkipSchemaValidation
 	inst.WaitStrategy = kube.HookOnlyStrategy
 	inst.Timeout = ApplyTimeout
 	inst.Labels = maps.Clone(opts.Labels)
@@ -209,6 +213,7 @@ func (c *Client) Upgrade(ctx context.Context, ns, releaseName string, ch ChartRe
 	up.Namespace = ns
 	up.ServerSideApply = "true"
 	up.ForceConflicts = opts.ForceConflicts
+	up.SkipSchemaValidation = opts.SkipSchemaValidation
 	up.WaitStrategy = kube.HookOnlyStrategy
 	up.Timeout = ApplyTimeout
 	up.Labels = maps.Clone(opts.Labels)

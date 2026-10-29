@@ -208,6 +208,7 @@ A layer with no `values`, or `values: null`, contributes nothing.
 | `serving.modelsphere.dev/force-delete-after` | Overrides `spec.deletion.forceDeleteAfter`. `0s` force-deletes a terminating pod on the next pass. |
 | `serving.modelsphere.dev/force-conflicts: "<generation>"` | Force field-manager conflicts on the apply for that generation only. Any other value is ignored. Recorded as `forceConflicts` in `status.history`. |
 | `serving.modelsphere.dev/re-resolve: "<any new value>"` | Drop the pinned chart version once and resolve `spec.chart.version` to the newest version in range. See [Chart version](#chart-version). |
+| `serving.modelsphere.dev/skip-schema-validation: "true"` | Install and upgrade without checking the merged values against the chart's `values.schema.json` (helm's `--skip-schema-validation`), for every apply while set. Any other value leaves the check on. An escape hatch for values the schema refuses. Not part of the applied hash: turning it on re-applies only a release whose last apply did not succeed. |
 | `swiss.modelsphere.dev/*` | Copied into each history entry and ControllerRevision. Otherwise ignored. |
 
 Annotation changes trigger a reconcile, as do generation changes and deletion. Status-only updates do not.

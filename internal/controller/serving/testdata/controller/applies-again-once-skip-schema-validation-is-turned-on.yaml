@@ -1,0 +1,24 @@
+name: applies-again-once-skip-schema-validation-is-turned-on
+description: a release the chart's schema refused applies once the skip-schema-validation annotation is set, with no spec change
+steps:
+  - action: setHelm
+    installErr: "values don't meet the specifications of the schema(s)"
+  - action: create
+    version: "0.8.6"
+  - action: reconcile
+    expect:
+      errorContains: schema
+      installs: 1
+      lastSkipSchemaValidation: false
+  - action: setHelm
+    installErr: ""
+  - action: update
+    annotations:
+      serving.modelsphere.dev/skip-schema-validation: "true"
+    expect:
+      generation: 1
+  - action: reconcile
+    expect:
+      installs: 2
+      lastSkipSchemaValidation: true
+      phase: Applied
