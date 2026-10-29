@@ -401,9 +401,10 @@ func (r *LLMServiceReconciler) apply(ctx context.Context, obj *servingv1alpha1.L
 	}
 	ref := helm.ChartRef{Repo: obj.Spec.Chart.Repo, Name: obj.Spec.Chart.Name, Version: ver}
 	opts := helm.ApplyOpts{
-		ForceConflicts: obj.Annotations[servingv1alpha1.AnnotationForceConflicts] == strconv.FormatInt(obj.Generation, 10),
-		Credentials:    creds,
-		Labels:         releaseLabels(obj),
+		ForceConflicts:       obj.Annotations[servingv1alpha1.AnnotationForceConflicts] == strconv.FormatInt(obj.Generation, 10),
+		SkipSchemaValidation: obj.Annotations[servingv1alpha1.AnnotationSkipSchemaValidation] == "true",
+		Credentials:          creds,
+		Labels:               releaseLabels(obj),
 	}
 	var (
 		rel    *helm.Release

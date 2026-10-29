@@ -91,6 +91,7 @@ type fakeHelm struct {
 	upgradeErr               error
 	getErr                   error
 	lastForce                bool
+	lastSkipSchema           bool
 	// keepFailed stores a failed release when Install returns installErr.
 	keepFailed bool
 	// hold blocks Install and Upgrade until closed. entered is signaled first.
@@ -170,6 +171,7 @@ func (f *fakeHelm) gate() {
 func (f *fakeHelm) Install(_ context.Context, ns, name string, ch helm.ChartRef, values map[string]any, opts helm.ApplyOpts) (*helm.Release, error) {
 	f.installs++
 	f.lastForce = opts.ForceConflicts
+	f.lastSkipSchema = opts.SkipSchemaValidation
 	f.gate()
 	if f.installErr != nil {
 		if f.keepFailed {
@@ -192,6 +194,7 @@ func (f *fakeHelm) Install(_ context.Context, ns, name string, ch helm.ChartRef,
 func (f *fakeHelm) Upgrade(_ context.Context, ns, name string, ch helm.ChartRef, values map[string]any, opts helm.ApplyOpts) (*helm.Release, error) {
 	f.upgrades++
 	f.lastForce = opts.ForceConflicts
+	f.lastSkipSchema = opts.SkipSchemaValidation
 	f.gate()
 	if f.upgradeErr != nil {
 		return nil, f.upgradeErr

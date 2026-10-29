@@ -167,6 +167,7 @@ type expectSpec struct {
 	HelmTouched          *int               `json:"helmTouched,omitempty"`
 	ListCalls            *int               `json:"listCalls,omitempty"`
 	LastForce            *bool              `json:"lastForce,omitempty"`
+	LastSkipSchema       *bool              `json:"lastSkipSchemaValidation,omitempty"`
 	GetsUnchanged        *bool              `json:"getsUnchanged,omitempty"`
 	UpgradesUnchanged    *bool              `json:"upgradesUnchanged,omitempty"`
 	Phase                string             `json:"phase,omitempty"`
@@ -922,6 +923,7 @@ func (c *caseRun) checkHelm(exp *expectSpec, before helmSnap) {
 		Expect(c.h.gets + c.h.installs + c.h.upgrades).To(Equal(*exp.HelmTouched))
 	}
 	expectBool(c.h.lastForce, exp.LastForce)
+	expectBool(c.h.lastSkipSchema, exp.LastSkipSchema)
 	if exp.GetsUnchanged != nil && *exp.GetsUnchanged {
 		Expect(c.h.gets).To(Equal(before.gets))
 	}

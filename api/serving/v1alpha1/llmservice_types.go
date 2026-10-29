@@ -118,6 +118,13 @@ const (
 	// newest chart the repository holds. Any later new value does it again.
 	AnnotationReResolve = "serving.modelsphere.dev/re-resolve"
 
+	// AnnotationSkipSchemaValidation, set to "true", installs and upgrades
+	// without checking the merged values against the chart's
+	// values.schema.json, as helm's --skip-schema-validation does. Any other
+	// value leaves the check on. Not part of the applied hash: turning it on
+	// re-applies only a release whose last apply did not succeed.
+	AnnotationSkipSchemaValidation = "serving.modelsphere.dev/skip-schema-validation"
+
 	// SwissAnnotationPrefix selects annotations copied into each history entry.
 	// The operator otherwise ignores them.
 	SwissAnnotationPrefix = "swiss.modelsphere.dev/"
