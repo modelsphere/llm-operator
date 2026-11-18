@@ -274,6 +274,42 @@ var _ = Describe("LLMService controller", func() {
 			runServiceCase(tc)
 		})
 	}
+
+	It("updates Applied condition observedGeneration when unsuspended with unchanged AppliedHash", func() {
+		ns := takeNS()
+		svc := newService(ns, "suspend-toggle", ver086)
+		Expect(k8sClient.Create(ctx, svc)).To(Succeed())
+
+		h := &fakeHelm{}
+		r := newReconciler(h, &versionList{versions: []string{ver086}}, 5)
+
+		_, err := doReconcile(r, ns, svc.Name)
+		Expect(err).NotTo(HaveOccurred())
+		got := fetch(ns, svc.Name)
+		Expect(got.Status.ObservedGeneration).To(Equal(got.Generation))
+		cond := condition(got, servingv1alpha1.ConditionApplied)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.ObservedGeneration).To(Equal(got.Generation))
+
+		got.Spec.Suspend = true
+		Expect(k8sClient.Update(ctx, got)).To(Succeed())
+		_, err = doReconcile(r, ns, svc.Name)
+		Expect(err).NotTo(HaveOccurred())
+
+		got = fetch(ns, svc.Name)
+		got.Spec.Suspend = false
+		Expect(k8sClient.Update(ctx, got)).To(Succeed())
+		_, err = doReconcile(r, ns, svc.Name)
+		Expect(err).NotTo(HaveOccurred())
+
+		got = fetch(ns, svc.Name)
+		Expect(got.Status.Phase).To(Equal(servingv1alpha1.PhaseApplied))
+		Expect(got.Status.ObservedGeneration).To(Equal(got.Generation))
+		cond = condition(got, servingv1alpha1.ConditionApplied)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		Expect(cond.ObservedGeneration).To(Equal(got.Generation))
+	})
 })
 
 func ownedRel(obj *servingv1alpha1.LLMService, rev int, status string, updated time.Time) *helm.Release {

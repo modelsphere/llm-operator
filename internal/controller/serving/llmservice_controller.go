@@ -435,9 +435,9 @@ func (r *LLMServiceReconciler) finishApplied(ctx context.Context, obj *servingv1
 		obj.Status.ObservedGeneration != obj.Generation ||
 		obj.Status.Message != "" ||
 		obj.Status.Chart.ReResolve != reResolve ||
-		cond == nil || cond.Status != metav1.ConditionTrue
+		cond == nil || cond.Status != metav1.ConditionTrue || cond.ObservedGeneration != obj.Generation
 	if changed {
-		if cond == nil || cond.Status != metav1.ConditionTrue {
+		if cond == nil || cond.Status != metav1.ConditionTrue || cond.ObservedGeneration != obj.Generation {
 			meta.SetStatusCondition(&obj.Status.Conditions, metav1.Condition{
 				Type:               servingv1alpha1.ConditionApplied,
 				Status:             metav1.ConditionTrue,
